@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "semantic-strands"
+version = "0.1.0"
+description = "Deterministic, interpretable semantic encoding — a lightweight alternative to vector embeddings"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "nltk>=3.8",
+    "wordfreq>=3.0",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "scipy>=1.10",
+    "ruff>=0.4",
+    "mypy>=1.0",
+]
+
+[project.scripts]
+strand = "strands.cli:main"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
