@@ -11,3 +11,6 @@ dist/
 *.egg
 .venv/
 venv/
+
+# Layered build cache (deterministic, regeneratable from sources)
+strands/build/_cache/

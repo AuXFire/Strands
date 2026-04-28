@@ -135,18 +135,57 @@ def main() -> None:
                         help="Top-N neighbors per codon to retain")
     parser.add_argument("--min-weight", type=float, default=0.10,
                         help="Drop edges below this cosine")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Disable the layer cache for adjacency.")
+    parser.add_argument("--cache-dir", type=Path, default=None)
     args = parser.parse_args()
 
     print(f"Loading codebook from {args.codebook}")
     with args.codebook.open("r", encoding="utf-8") as f:
         codebook = json.load(f)
 
-    adjacency = build_adjacency(
-        codebook,
-        seeds_per_codon=args.seeds,
-        neighbors_per_codon=args.neighbors,
-        min_weight=args.min_weight,
+    # Cache key: codebook seeds_hash + Numberbatch version + parameters that
+    # affect output. If the seeds didn't change and Numberbatch didn't
+    # change, the adjacency is reused unchanged.
+    from strands.build.cache import (
+        NUMBERBATCH_VERSION,
+        get_or_build,
+        _hash,
     )
+    seeds_hash = codebook.get("stats", {}).get("seeds_hash", "unknown")
+    adj_input_hash = _hash({
+        "seeds": seeds_hash,
+        "nb": NUMBERBATCH_VERSION,
+        "seeds_per_codon": args.seeds,
+        "neighbors": args.neighbors,
+        "min_weight": args.min_weight,
+    })
+
+    if args.no_cache:
+        adjacency = build_adjacency(
+            codebook,
+            seeds_per_codon=args.seeds,
+            neighbors_per_codon=args.neighbors,
+            min_weight=args.min_weight,
+        )
+    else:
+        adjacency = get_or_build(
+            "adjacency", adj_input_hash,
+            lambda: build_adjacency(
+                codebook,
+                seeds_per_codon=args.seeds,
+                neighbors_per_codon=args.neighbors,
+                min_weight=args.min_weight,
+            ),
+            cache_dir=args.cache_dir,
+            sources={
+                "seeds_hash": seeds_hash,
+                "numberbatch": NUMBERBATCH_VERSION,
+                "seeds_per_codon": args.seeds,
+                "neighbors": args.neighbors,
+                "min_weight": args.min_weight,
+            },
+        )
 
     codebook["codon_adjacency"] = adjacency
     codebook.setdefault("stats", {})["codon_adjacency_edges"] = sum(

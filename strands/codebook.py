@@ -152,10 +152,24 @@ class Codebook:
 
 
 _DEFAULT_CODEBOOK_PATH = Path(__file__).parent / "data" / "codebook_v0.1.0.json"
+_DEFAULT_PATCHES_PATH = Path(__file__).parent / "data" / "codebook.patches.json"
+_DEFAULT_EXTENSIONS_DIR = Path(__file__).parent / "data" / "extensions"
 _default_cache: Codebook | None = None
 
 
-def default_codebook() -> Codebook:
+def default_codebook(*, apply_patches: bool = True) -> Codebook:
+    """Load the default codebook with patch + extension overlays.
+
+    Layered loading:
+      1. Base codebook JSON (everything from the build pipeline).
+      2. Optional patches file (``codebook.patches.json``) — small
+         hot-fix overrides shipped between major releases.
+      3. Optional auto-loaded extensions in ``data/extensions/auto/``.
+
+    The patch file is the recommended mechanism for shipping single-entry
+    fixes (wrong codon, bad sense_rank) without re-running the build.
+    Each patch entry uses the same schema as a regular codebook entry.
+    """
     global _default_cache
     if _default_cache is None:
         if not _DEFAULT_CODEBOOK_PATH.exists():
@@ -164,4 +178,27 @@ def default_codebook() -> Codebook:
                 f"Run `strand build-codebook` first."
             )
         _default_cache = Codebook.load(_DEFAULT_CODEBOOK_PATH)
+
+        if apply_patches and _DEFAULT_PATCHES_PATH.exists():
+            try:
+                with _DEFAULT_PATCHES_PATH.open("r", encoding="utf-8") as f:
+                    _default_cache.merge_extension(json.load(f))
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        auto_dir = _DEFAULT_EXTENSIONS_DIR / "auto"
+        if apply_patches and auto_dir.is_dir():
+            for ext_path in sorted(auto_dir.glob("*.json")):
+                try:
+                    with ext_path.open("r", encoding="utf-8") as f:
+                        _default_cache.merge_extension(json.load(f))
+                except (OSError, json.JSONDecodeError):
+                    continue
     return _default_cache
+
+
+def reset_default_codebook_cache() -> None:
+    """Force a re-read of the default codebook on next access. Used by
+    tests that mutate codebook files between runs."""
+    global _default_cache
+    _default_cache = None
