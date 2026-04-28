@@ -100,6 +100,29 @@ class Codebook:
         with Path(path).open("r", encoding="utf-8") as f:
             return cls(json.load(f))
 
+    def merge_extension(self, extension: dict) -> None:
+        """Merge an extension dict (spec §14.3 format) into this codebook.
+
+        Extension entries override base entries. Code entries also merge.
+        Returns nothing — modifies in place.
+        """
+        ext_entries = extension.get("entries", {})
+        for word, raw in ext_entries.items():
+            self._entries[word.lower()] = raw
+        ext_code = extension.get("code_entries", {})
+        for word, raw in ext_code.items():
+            self._code_entries[word.lower()] = raw
+
+    @classmethod
+    def load_with_extensions(cls, base_path: Path | str,
+                             extensions: list[Path | str]) -> Codebook:
+        """Load a base codebook and merge a list of extensions in order."""
+        cb = cls.load(base_path)
+        for ext_path in extensions:
+            with Path(ext_path).open("r", encoding="utf-8") as f:
+                cb.merge_extension(json.load(f))
+        return cb
+
 
 _DEFAULT_CODEBOOK_PATH = Path(__file__).parent / "data" / "codebook_v0.1.0.json"
 _default_cache: Codebook | None = None
