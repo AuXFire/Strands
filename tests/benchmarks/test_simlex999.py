@@ -22,7 +22,7 @@ from strands import compare
 
 DATA = Path(__file__).parent / "data" / "simlex999.txt"
 SPEC_TARGET_RHO = 0.35  # spec §12.1, aspirational
-REALISTIC_FLOOR = 0.20  # current discrete-scoring achievable
+REALISTIC_FLOOR = 0.35  # post-corrections (C1+C2+C3+C4+C5) floor
 
 
 def _load_pairs() -> list[tuple[str, str, float]]:

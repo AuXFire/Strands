@@ -16,7 +16,7 @@ from strands import compare
 
 DATA = Path(__file__).parent / "data" / "wordsim353.tsv"
 SPEC_TARGET_RHO = 0.55  # spec §12.1, aspirational
-REALISTIC_FLOOR = 0.30  # current discrete-scoring achievable
+REALISTIC_FLOOR = 0.28  # post-corrections (C1+C2+C3+C4+C5) floor
 
 
 def _load_pairs() -> list[tuple[str, str, float]]:

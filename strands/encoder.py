@@ -47,6 +47,14 @@ def encode(text: str, *, codebook: Codebook | None = None) -> EncodeResult:
             lookup_word = token
 
         shade = compute_shade(lookup_word, cb_entry.shade_hint)
-        entries.append(CodonEntry(codon=cb_entry.codon, shade=shade, word=lookup_word))
+        entries.append(
+            CodonEntry(
+                codon=cb_entry.codon,
+                shade=shade,
+                word=lookup_word,
+                alt_codons=cb_entry.alt_codons,
+                synset=cb_entry.synset,
+            )
+        )
 
     return EncodeResult(strand=Strand(codons=entries), text=text, unknowns=unknowns)

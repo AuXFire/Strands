@@ -44,8 +44,14 @@ def build(
 
     `include_inflections` adds rule-based inflectional variants (plurals,
     -ed/-ing, comparatives) plus WordNet's irregular-form exception lists.
+
+    Each entry now carries:
+      d, c, n  — primary codon
+      alt      — alternative codon senses (C1 multi-sense)
+      syn      — primary WordNet synset name (C2 path-similarity bridge)
+      s        — shade hint
     """
-    seed_map, word_to_pos = expand_seeds_with_pos(ALL_SEEDS)
+    seed_map, word_to_pos, word_to_alts, word_to_synset = expand_seeds_with_pos(ALL_SEEDS)
     seed_words: set[str] = {w.lower() for words in ALL_SEEDS.values() for w in words}
 
     entries: dict[str, dict] = {}
@@ -61,7 +67,7 @@ def build(
         formality = formality_from_frequency(word)
         intensity = _intensity_for(word)
 
-        entries[word] = {
+        entry: dict = {
             "d": domain_code,
             "c": category,
             "n": concept,
@@ -71,6 +77,13 @@ def build(
                 "i": intensity,
             },
         }
+        synset_name = word_to_synset.get(word)
+        if synset_name:
+            entry["syn"] = synset_name
+        alts = word_to_alts.get(word)
+        if alts:
+            entry["alt"] = [[d, c, n] for (d, c, n) in alts]
+        entries[word] = entry
 
     if include_inflections:
         # Inflectional variants overwrite any conflicting WordNet entries so
@@ -86,12 +99,17 @@ def build(
                 for variant in variants_for(word, pos):
                     if variant in seed_words:
                         continue
-                    entries[variant] = {
+                    new_entry = {
                         "d": base_entry["d"],
                         "c": base_entry["c"],
                         "n": base_entry["n"],
                         "s": dict(base_entry["s"]),
                     }
+                    if "syn" in base_entry:
+                        new_entry["syn"] = base_entry["syn"]
+                    if "alt" in base_entry:
+                        new_entry["alt"] = [list(a) for a in base_entry["alt"]]
+                    entries[variant] = new_entry
 
         # WordNet's irregular-form exception lists (e.g. went -> go).
         for inflected, lemmas in wordnet_irregular_forms().items():

@@ -1,9 +1,23 @@
-"""Strand alignment / comparison (spec §8)."""
+"""Strand alignment / comparison (spec §8 + post-benchmark corrections).
+
+Active corrections:
+  C1 — multi-sense max: when the codebook supplies alternative codons for a
+       word, take max(score) across all primary/alt combinations.
+  C2 — WordNet path-similarity bridge: when the codon-level score is below
+       the domain-match floor, fall back to path_similarity between the
+       entries' synset names (× 0.4 cap so it never beats a true codon
+       match).
+  C3 — shade tiebreaker for partial matches: a small shade-similarity bonus
+       (× 0.05) on same-domain-only and same-domain+category pairs, in
+       addition to the spec §8.1 main bonus (× 0.25) at concept match.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 
+from strands.codon import Codon
 from strands.shade import shade_similarity
 from strands.strand import CodonEntry, Strand
 
@@ -43,19 +57,68 @@ class ComparisonResult:
         return "\n".join(lines)
 
 
-def _pair_score(a: CodonEntry, b: CodonEntry) -> float:
-    if a.codon.domain != b.codon.domain:
+def _codon_pair_score(a: Codon, b: Codon, shade_a: int, shade_b: int) -> float:
+    """Pure codon+shade scoring; spec §8.1 plus C3 shade tiebreaker."""
+    if a.domain != b.domain:
         return 0.0
+
+    sh_sim = shade_similarity(shade_a, shade_b)
     score = 0.25
-    if a.codon.category == b.codon.category:
+    if a.category == b.category:
         score += 0.15
-        if a.codon.concept == b.codon.concept:
+        if a.concept == b.concept:
             score += 0.35
-            score += shade_similarity(a.shade, b.shade) * 0.25
+            score += sh_sim * 0.25
+        else:
+            score += sh_sim * 0.05
+    else:
+        score += sh_sim * 0.05
     return score
 
 
-def compare_strands(strand_a: Strand, strand_b: Strand) -> ComparisonResult:
+@lru_cache(maxsize=8192)
+def _path_similarity(syn_a: str, syn_b: str) -> float | None:
+    """Memoised WordNet path similarity. Returns None on any failure."""
+    try:
+        from nltk.corpus import wordnet as wn
+    except ImportError:
+        return None
+    try:
+        s_a = wn.synset(syn_a)
+        s_b = wn.synset(syn_b)
+        return s_a.path_similarity(s_b)
+    except Exception:
+        return None
+
+
+def _pair_score(a: CodonEntry, b: CodonEntry, *, wordnet_bridge: bool = True) -> float:
+    """C1 multi-sense + C2 WordNet bridge + C3 shade tiebreaker."""
+    a_codons = (a.codon,) + a.alt_codons
+    b_codons = (b.codon,) + b.alt_codons
+
+    best = 0.0
+    for ca in a_codons:
+        for cb in b_codons:
+            s = _codon_pair_score(ca, cb, a.shade, b.shade)
+            if s > best:
+                best = s
+
+    # C2: cross-domain WordNet bridge — only when no codon variant gave any
+    # domain-level credit, and only up to 0.4 (less than a category match).
+    if best < 0.25 and wordnet_bridge and a.synset and b.synset:
+        sim = _path_similarity(a.synset, b.synset)
+        if sim is not None and sim > 0:
+            best = max(best, sim * 0.4)
+
+    return best
+
+
+def compare_strands(
+    strand_a: Strand,
+    strand_b: Strand,
+    *,
+    wordnet_bridge: bool = True,
+) -> ComparisonResult:
     matches: list[Match] = []
     used_b: set[int] = set()
     matched_a_idx: set[int] = set()
@@ -69,7 +132,7 @@ def compare_strands(strand_a: Strand, strand_b: Strand) -> ComparisonResult:
         for j, codon_b in enumerate(strand_b.codons):
             if j in used_b:
                 continue
-            s = _pair_score(codon_a, codon_b)
+            s = _pair_score(codon_a, codon_b, wordnet_bridge=wordnet_bridge)
             if s > best_score:
                 best_score = s
                 best_j = j

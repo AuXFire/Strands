@@ -15,6 +15,8 @@ class CodonEntry:
     codon: Codon
     shade: int
     word: str = ""
+    alt_codons: tuple[Codon, ...] = ()
+    synset: str = ""
 
     @property
     def shade_obj(self) -> Shade:

@@ -1,21 +1,23 @@
 """Expand seed concepts across the full WordNet vocabulary.
 
-Strategy (all passes operate on synset.name()):
-  1. Anchor: every seed word's synsets are mapped to its codon.
-  2. Upward pass — for every unclassified synset, BFS along POS-appropriate
-     "more general" relations (hypernyms / similar_tos / pertainyms /
-     derivationally_related_forms). Stop at the first classified synset.
-  3. Downward pass — for synsets still unclassified after pass 2, BFS along
-     the inverse relations (hyponyms / also_sees / similar_tos in reverse)
-     until hitting a classified descendant.
-  4. Lateral derivational pass — follow derivationally_related_forms across
-     POS boundaries (e.g. an adverb's adjective root, an adjective's noun
-     pertainym).
-  5. Fallback — anything still unclassified gets the AB (Abstract) generic
-     codon so every synset contributes lemmas to the codebook.
+Phase 1 + post-benchmark corrections C4 (better seed-sense selection) and
+C5 (capped walks for top-level synsets).
 
-Every classified synset emits one codebook entry per lemma, with multi-word
-phrases joined by spaces. First-classified-wins on lemma collisions.
+Strategy:
+  1. Anchor — for each seed word, prefer the synset where it is the FIRST
+     lemma. Break ties by sense-frequency (lower sense number wins).
+  2. Upward BFS along POS-appropriate "more general" relations with a max
+     depth (default 30).
+  3. Downward BFS along hyponyms / similar_tos for synsets without an
+     ancestor seed. Top-level WordNet synsets (entity, abstraction,
+     physical_entity, thing) are excluded as anchors so the downward pass
+     doesn't pull every noun under one of them.
+  4. Cross-POS derivational walk for stragglers.
+  5. Fallback (AB000) so every synset contributes lemmas.
+
+Output now carries per-lemma synset name and an `alt_codons` list of
+alternative senses, supporting Correction C1 (multi-sense) and C2 (WordNet
+bridge) at runtime.
 """
 
 from __future__ import annotations
@@ -32,8 +34,22 @@ except ImportError as e:
 
 CodonKey = tuple[str, int, int]
 
-# Default fallback codon for synsets with no path to any seed.
 _FALLBACK_CODON: CodonKey = ("AB", 0, 0)
+
+# Top-level WordNet synsets that should NOT be classified directly. They
+# attract nothing in the upward pass (they have no hypernyms) and would
+# otherwise become anchors during the downward pass, pulling every noun
+# under whatever seed first walked through them.
+_TOP_LEVEL_BLOCKLIST: frozenset[str] = frozenset({
+    "entity.n.01",
+    "physical_entity.n.01",
+    "abstraction.n.06",
+    "thing.n.12",
+    "object.n.01",
+    "whole.n.02",
+    "matter.n.03",
+    "psychological_feature.n.01",
+})
 
 
 def _lemma_words(synset) -> Iterable[str]:
@@ -43,10 +59,30 @@ def _lemma_words(synset) -> Iterable[str]:
             yield word
 
 
+def _select_best_synset_for_seed(word: str) -> object | None:
+    """C4: prefer the synset where ``word`` is the first lemma; otherwise
+    take the lowest-numbered sense (most common in WordNet's frequency order)."""
+    candidates = wn.synsets(word)
+    if not candidates:
+        return None
+    target = word.lower().replace(" ", "_")
+    for synset in candidates:
+        first_lemma = synset.lemmas()[0].name().lower()
+        if first_lemma == target:
+            return synset
+    return candidates[0]
+
+
 def _seed_synset_map(seeds: dict[CodonKey, list[str]]) -> dict[str, CodonKey]:
+    """Map synset.name() -> codon key, preferring first-lemma synsets."""
     out: dict[str, CodonKey] = {}
     for key, words in seeds.items():
         for word in words:
+            best = _select_best_synset_for_seed(word)
+            if best is None:
+                continue
+            if best.name() not in out:
+                out[best.name()] = key
             for synset in wn.synsets(word):
                 if synset.name() not in out:
                     out[synset.name()] = key
@@ -54,7 +90,6 @@ def _seed_synset_map(seeds: dict[CodonKey, list[str]]) -> dict[str, CodonKey]:
 
 
 def _upward_neighbors(synset) -> list:
-    """POS-appropriate "more general" neighbors."""
     pos = synset.pos()
     out: list = []
     if pos in ("n", "v"):
@@ -75,19 +110,16 @@ def _upward_neighbors(synset) -> list:
     return out
 
 
-def _downward_neighbors(synset) -> list:
+def _downward_neighbors(synset, *, max_branches: int = 12) -> list:
     pos = synset.pos()
     out: list = []
     if pos in ("n", "v"):
-        out += list(synset.hyponyms())
-        out += list(synset.instance_hyponyms())
+        # C5: cap branching to avoid sucking entire subtrees through one anchor
+        out += list(synset.hyponyms())[:max_branches]
+        out += list(synset.instance_hyponyms())[:max_branches]
     elif pos in ("a", "s"):
-        # also_sees and similar_tos are bidirectional in spirit
-        out += list(synset.also_sees())
-        out += list(synset.similar_tos())
-    elif pos == "r":
-        out += list(synset.also_sees()) if hasattr(synset, "also_sees") else []
-    # Always look at derivational forms — they bridge POS for everyone.
+        out += list(synset.also_sees())[:max_branches]
+        out += list(synset.similar_tos())[:max_branches]
     for lemma in synset.lemmas():
         out += [d.synset() for d in lemma.derivationally_related_forms()]
     return out
@@ -119,30 +151,34 @@ def _bfs_to_classified(
     return None
 
 
-def expand_seeds(
+def expand_seeds_with_pos(
     seeds: dict[CodonKey, list[str]],
     *,
     max_upward_depth: int = 30,
-    max_downward_depth: int = 12,
-    use_fallback: bool = True,
-) -> dict[str, CodonKey]:
-    """Return word -> codon for the entire WordNet vocabulary."""
-    word_to_codon: dict[str, CodonKey] = {}
-
-    # Pass 0: explicit seed words always win.
+    max_downward_depth: int = 6,
+    max_senses_per_word: int = 3,
+) -> tuple[
+    dict[str, CodonKey],          # word -> primary codon
+    dict[str, list[str]],          # word -> POS list
+    dict[str, list[CodonKey]],     # word -> alt codons (C1)
+    dict[str, str],                # word -> primary synset name (C2)
+]:
+    """Multi-sense codebook expansion. Returns four parallel maps."""
+    seed_only: dict[str, CodonKey] = {}
     for key, words in seeds.items():
         for w in words:
             w_norm = w.lower().strip()
-            if w_norm and w_norm not in word_to_codon:
-                word_to_codon[w_norm] = key
+            if w_norm and w_norm not in seed_only:
+                seed_only[w_norm] = key
 
     classified: dict[str, CodonKey] = _seed_synset_map(seeds)
-
     all_synsets = sorted(wn.all_synsets(), key=lambda s: s.name())
 
-    # Pass 1: walk UP from each unclassified synset.
+    # Pass 1: upward.
     for synset in all_synsets:
         if synset.name() in classified:
+            continue
+        if synset.name() in _TOP_LEVEL_BLOCKLIST:
             continue
         codon = _bfs_to_classified(
             synset, classified, neighbor_fn=_upward_neighbors, max_depth=max_upward_depth
@@ -150,9 +186,12 @@ def expand_seeds(
         if codon is not None:
             classified[synset.name()] = codon
 
-    # Pass 2: walk DOWN from each still-unclassified synset.
+    # Pass 2: downward — but skip top-level synsets so they don't anchor
+    # huge subtrees.
     for synset in all_synsets:
         if synset.name() in classified:
+            continue
+        if synset.name() in _TOP_LEVEL_BLOCKLIST:
             continue
         codon = _bfs_to_classified(
             synset, classified, neighbor_fn=_downward_neighbors, max_depth=max_downward_depth
@@ -164,72 +203,6 @@ def expand_seeds(
     for synset in all_synsets:
         if synset.name() in classified:
             continue
-        # Try following derivationally_related_forms across POS aggressively.
-        related: list = []
-        for lemma in synset.lemmas():
-            related += [d.synset() for d in lemma.derivationally_related_forms()]
-        for r in related:
-            if r.name() in classified:
-                classified[synset.name()] = classified[r.name()]
-                break
-
-    # Pass 4: fallback for anything that survived all passes.
-    if use_fallback:
-        for synset in all_synsets:
-            if synset.name() not in classified:
-                classified[synset.name()] = _FALLBACK_CODON
-
-    # Emit lemma -> codon for every classified synset, tracking POS so the
-    # caller can derive inflectional variants per POS.
-    for synset in all_synsets:
-        codon = classified.get(synset.name())
-        if codon is None:
-            continue
-        for lemma in _lemma_words(synset):
-            if lemma not in word_to_codon:
-                word_to_codon[lemma] = codon
-
-    return word_to_codon
-
-
-def expand_seeds_with_pos(
-    seeds: dict[CodonKey, list[str]],
-    *,
-    max_upward_depth: int = 30,
-    max_downward_depth: int = 12,
-) -> tuple[dict[str, CodonKey], dict[str, list[str]]]:
-    """Like ``expand_seeds`` but also returns word -> [POS codes] for inflection."""
-    seed_only: dict[str, CodonKey] = {}
-    for key, words in seeds.items():
-        for w in words:
-            w_norm = w.lower().strip()
-            if w_norm and w_norm not in seed_only:
-                seed_only[w_norm] = key
-
-    classified: dict[str, CodonKey] = _seed_synset_map(seeds)
-    all_synsets = sorted(wn.all_synsets(), key=lambda s: s.name())
-
-    for synset in all_synsets:
-        if synset.name() in classified:
-            continue
-        codon = _bfs_to_classified(
-            synset, classified, neighbor_fn=_upward_neighbors, max_depth=max_upward_depth
-        )
-        if codon is not None:
-            classified[synset.name()] = codon
-
-    for synset in all_synsets:
-        if synset.name() in classified:
-            continue
-        codon = _bfs_to_classified(
-            synset, classified, neighbor_fn=_downward_neighbors, max_depth=max_downward_depth
-        )
-        if codon is not None:
-            classified[synset.name()] = codon
-
-    for synset in all_synsets:
-        if synset.name() in classified:
-            continue
         for lemma in synset.lemmas():
             for d in lemma.derivationally_related_forms():
                 if d.synset().name() in classified:
@@ -238,12 +211,22 @@ def expand_seeds_with_pos(
             if synset.name() in classified:
                 break
 
+    # Pass 4: fallback for everything else (including top-level entries).
     for synset in all_synsets:
         if synset.name() not in classified:
             classified[synset.name()] = _FALLBACK_CODON
 
     word_to_codon: dict[str, CodonKey] = dict(seed_only)
     word_to_pos: dict[str, list[str]] = {}
+    word_to_alts: dict[str, list[CodonKey]] = {}
+    word_to_synset: dict[str, str] = {}
+
+    # Pre-populate synsets for seed words via WordNet so the C2 bridge
+    # has something to look up at runtime.
+    for word in seed_only:
+        best = _select_best_synset_for_seed(word)
+        if best is not None:
+            word_to_synset[word] = best.name()
 
     for synset in all_synsets:
         codon = classified[synset.name()]
@@ -251,8 +234,28 @@ def expand_seeds_with_pos(
         for lemma in _lemma_words(synset):
             if lemma not in word_to_codon:
                 word_to_codon[lemma] = codon
+                word_to_synset[lemma] = synset.name()
+            else:
+                # Track this as an alternative sense (C1).
+                primary = word_to_codon[lemma]
+                if codon != primary:
+                    alts = word_to_alts.setdefault(lemma, [])
+                    if codon not in alts and len(alts) < max_senses_per_word - 1:
+                        alts.append(codon)
+                # Pick up a synset name if this word didn't have one (seeds).
+                if lemma not in word_to_synset:
+                    word_to_synset[lemma] = synset.name()
             pos_list = word_to_pos.setdefault(lemma, [])
             if pos not in pos_list:
                 pos_list.append(pos)
 
-    return word_to_codon, word_to_pos
+    return word_to_codon, word_to_pos, word_to_alts, word_to_synset
+
+
+def expand_seeds(
+    seeds: dict[CodonKey, list[str]],
+    **kwargs,
+) -> dict[str, CodonKey]:
+    """Backwards-compatible wrapper that drops the alt/POS/synset metadata."""
+    primary, _, _, _ = expand_seeds_with_pos(seeds, **kwargs)
+    return primary

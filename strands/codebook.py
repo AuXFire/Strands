@@ -15,6 +15,8 @@ class CodebookEntry:
     codon: Codon
     domain_code: str
     shade_hint: dict
+    alt_codons: tuple[Codon, ...] = ()
+    synset: str = ""
 
 
 class Codebook:
@@ -41,11 +43,25 @@ class Codebook:
         if domain_id is None:
             return None
         codon = Codon(domain=domain_id, category=raw["c"], concept=raw["n"])
+
+        alt_codons: list[Codon] = []
+        for alt in raw.get("alt", []):
+            try:
+                d_code, cat, conc = alt[0], alt[1], alt[2]
+            except (KeyError, IndexError, TypeError):
+                continue
+            d_id = DOMAIN_CODES.get(d_code)
+            if d_id is None:
+                continue
+            alt_codons.append(Codon(domain=d_id, category=cat, concept=conc))
+
         return CodebookEntry(
             word=word,
             codon=codon,
             domain_code=domain_code,
             shade_hint=raw.get("s", {}),
+            alt_codons=tuple(alt_codons),
+            synset=raw.get("syn", ""),
         )
 
     def lookup(self, word: str, *, mode: str = "text") -> CodebookEntry | None:

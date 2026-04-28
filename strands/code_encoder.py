@@ -198,6 +198,8 @@ def encode_code(
                         codon=cb_entry.codon,
                         shade=compute_shade(token.lower(), cb_entry.shade_hint),
                         word=token.lower(),
+                        alt_codons=cb_entry.alt_codons,
+                        synset=cb_entry.synset,
                     )
                 )
                 structural += 1
@@ -219,6 +221,8 @@ def encode_code(
                             codon=cb_entry.codon,
                             shade=compute_shade(word, cb_entry.shade_hint),
                             word=word,
+                            alt_codons=cb_entry.alt_codons,
+                            synset=cb_entry.synset,
                         )
                     )
                     semantic += 1
