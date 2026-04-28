@@ -48,6 +48,12 @@ class Codon:
     def domain_code(self) -> str:
         return _ID_TO_CODE.get(self.domain, "??")
 
+    @property
+    def is_null(self) -> bool:
+        """A null codon has domain=0xFF — sentinel for unused related-codon
+        slots in v2 strands. All real domain IDs are <= 0x42."""
+        return self.domain == 0xFF
+
     def to_str(self) -> str:
         return f"{self.domain_code}{self.category:01X}{self.concept:02X}"
 
@@ -60,3 +66,8 @@ class Codon:
         category = int(s[2], 16)
         concept = int(s[3:5], 16)
         return cls(domain=domain, category=category, concept=concept)
+
+
+# Sentinel codon used to fill empty related-codon slots in v2 strands.
+# Domain 0xFF is reserved and never assigned to real entries.
+NULL_CODON = Codon(domain=0xFF, category=0xFF, concept=0xFF)

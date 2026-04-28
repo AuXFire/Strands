@@ -74,7 +74,7 @@ def main() -> None:
 
         gold = [g for _, _, g in pairs]
         strand_pred = [
-            compare(a, b, conceptnet_bridge=args.conceptnet).score
+            compare(a, b).score  # pure strand-native; no flags
             for a, b, _ in pairs
         ]
         glove_pred = [

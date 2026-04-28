@@ -1,5 +1,5 @@
 """Text encoder pipeline: text → tokenize → lemmatize → codebook lookup →
-context-aware shade → Strand."""
+context-aware shade → Strand v2 with stamped related codons."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from strands.codebook import Codebook, default_codebook
 from strands.context_shade import apply_context, scan_context
 from strands.lemmatizer import lemmatize
 from strands.shade import compute_shade
-from strands.strand import CodonEntry, Strand
+from strands.strand import VERSION_V2, CodonEntry, Strand
 from strands.tokenizer import STOP_WORDS
 
 
@@ -33,13 +33,17 @@ def encode(
     *,
     codebook: Codebook | None = None,
     context_aware: bool = True,
-    wsd: bool = False,
 ) -> EncodeResult:
-    """Encode ``text`` into a Strand.
+    """Encode ``text`` into a strand-v2 Strand.
 
-    When ``context_aware`` is True (default), spec §4 modifiers are applied:
-    intensifiers boost intensity bits, negation flips polarity bits, formal
-    register markers boost formality bits.
+    Each output token carries:
+      - Primary codon (3 bytes) and shade (1 byte) — spec §3.
+      - Up to two related codons with quantized weights (2 × 4 bytes) —
+        stamped from the codebook's ConceptNet-derived ``rel`` field.
+
+    The resulting strand is fully self-contained: comparing two strands
+    requires only their bytes — no codebook, no runtime model, no
+    sidecar files.
     """
     cb = codebook or default_codebook()
 
@@ -53,10 +57,6 @@ def encode(
 
     entries: list[CodonEntry] = []
     unknowns: list[str] = []
-
-    if wsd:
-        from strands.wsd import lesk_select
-        context_words = [t for t in all_tokens if t not in STOP_WORDS]
 
     for idx, token in enumerate(all_tokens):
         if token in STOP_WORDS:
@@ -77,31 +77,18 @@ def encode(
         if hints is not None:
             shade = apply_context(shade, idx, hints)
 
-        sense_rank = 0
-        chosen_codon = cb_entry.codon
-        chosen_alts = cb_entry.alt_codons
-        if wsd and cb_entry.alt_codons:
-            sense_idx = lesk_select(lookup_word, context_words)
-            if sense_idx is not None and sense_idx > 0:
-                # Promote the chosen alt to primary; demote primary into alts.
-                all_codons = (cb_entry.codon,) + cb_entry.alt_codons
-                if sense_idx < len(all_codons):
-                    chosen_codon = all_codons[sense_idx]
-                    chosen_alts = tuple(
-                        c for i, c in enumerate(all_codons) if i != sense_idx
-                    )
-                    sense_rank = sense_idx
-
         entries.append(
             CodonEntry(
-                codon=chosen_codon,
+                codon=cb_entry.codon,
                 shade=shade,
                 word=lookup_word,
-                alt_codons=chosen_alts,
+                related=cb_entry.related,
                 synset=cb_entry.synset,
-                sense_rank=sense_rank,
-                source_position=idx & 0xFFFF,
             )
         )
 
-    return EncodeResult(strand=Strand(codons=entries), text=text, unknowns=unknowns)
+    return EncodeResult(
+        strand=Strand(codons=entries, version=VERSION_V2),
+        text=text,
+        unknowns=unknowns,
+    )

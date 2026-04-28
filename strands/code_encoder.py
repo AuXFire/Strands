@@ -216,11 +216,12 @@ def encode_code(
                         codon=cb_entry.codon,
                         shade=compute_shade(token.lower(), cb_entry.shade_hint),
                         word=token.lower(),
-                        alt_codons=cb_entry.alt_codons,
+                        related=cb_entry.related,
                         synset=cb_entry.synset,
                     )
                 )
                 structural += 1
+        # NOTE: identifier branch handled below in split_identifier loop.
             else:
                 # Identifier → split + look up each part.
                 for part in split_identifier(token):
@@ -239,7 +240,7 @@ def encode_code(
                             codon=cb_entry.codon,
                             shade=compute_shade(word, cb_entry.shade_hint),
                             word=word,
-                            alt_codons=cb_entry.alt_codons,
+                            related=cb_entry.related,
                             synset=cb_entry.synset,
                         )
                     )
@@ -247,8 +248,9 @@ def encode_code(
 
     from strands.code_patterns import detect_patterns
 
+    from strands.strand import VERSION_V2
     return CodeEncodeResult(
-        strand=Strand(codons=entries),
+        strand=Strand(codons=entries, version=VERSION_V2),
         text=source,
         language=language,
         unknowns=unknowns,

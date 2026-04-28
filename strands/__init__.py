@@ -1,4 +1,10 @@
-"""Semantic Strands — deterministic, interpretable semantic encoding."""
+"""Semantic Strands — deterministic, interpretable semantic encoding.
+
+The runtime is pure: encoding uses the codebook, comparison uses only
+the strand bytes. No ConceptNet model, no Numberbatch, no GloVe, no
+sidecar files. Everything needed to compare two strands lives in the
+strand's 12 bytes per token.
+"""
 
 from strands.code_encoder import CodeEncodeResult, detect_language, encode_code
 from strands.codebook import Codebook, default_codebook
@@ -16,56 +22,21 @@ def compare(
     text_a: str,
     text_b: str,
     *,
-    wordnet_bridge: bool = True,
-    conceptnet_bridge: bool | None = None,
-    sentence_mode: bool | None = None,
+    code_aware: bool = False,
 ) -> ComparisonResult:
-    """Convenience: encode both inputs, return alignment result.
+    """Encode both inputs and return their alignment score.
 
-    For sentence-length inputs (auto-detected when ConceptNet is enabled
-    and either input has more than ~4 content tokens), uses ConceptNet
-    mean-vector cosine over the raw tokens — the same baseline that beats
-    GloVe-mean on STS, while strand storage remains 4 bytes/word.
+    Pure strand-native: no runtime models, no sidecar files, no external
+    state at compare time.
     """
-    import os
-    cn_default = os.environ.get("STRANDS_CONCEPTNET", "0") == "1"
-    cn_enabled = conceptnet_bridge if conceptnet_bridge is not None else cn_default
-
-    auto_sentence = (
-        cn_enabled
-        and sentence_mode is not False
-        and (len(text_a.split()) > 4 or len(text_b.split()) > 4)
-    )
-
-    if (sentence_mode or auto_sentence) and cn_enabled:
-        import re
-        from strands.relatedness import (
-            conceptnet_mean_vector,
-            is_conceptnet_available,
-            vector_cosine,
-        )
-
-        if is_conceptnet_available():
-            tok_re = re.compile(r"[A-Za-z']+")
-            words_a = [t.lower() for t in tok_re.findall(text_a)]
-            words_b = [t.lower() for t in tok_re.findall(text_b)]
-            va = conceptnet_mean_vector(words_a)
-            vb = conceptnet_mean_vector(words_b)
-            if va is not None and vb is not None:
-                score = max(0.0, vector_cosine(va, vb))
-                return ComparisonResult(score=score, matches=[],
-                                        unmatched_a=[], unmatched_b=[])
-
     return compare_strands(
         encode(text_a).strand,
         encode(text_b).strand,
-        wordnet_bridge=wordnet_bridge,
-        conceptnet_bridge=conceptnet_bridge,
-        sentence_mode=sentence_mode,
+        code_aware=code_aware,
     )
 
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "CodeEncodeResult",
@@ -75,6 +46,7 @@ __all__ = [
     "ComparisonResult",
     "DOMAIN_CODES",
     "DOMAIN_NAMES",
+    "DocumentFingerprint",
     "EncodeResult",
     "InMemoryIndex",
     "IndexEntry",
@@ -83,6 +55,7 @@ __all__ = [
     "Shade",
     "Strand",
     "__version__",
+    "clone_similarity",
     "compare",
     "compare_strands",
     "compute_shade",

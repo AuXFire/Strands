@@ -1,34 +1,41 @@
-"""Strand alignment / comparison (spec §8 + post-benchmark corrections).
+"""Strand alignment / comparison — pure in-strand byte math.
 
-Active corrections:
-  C1 — multi-sense max: take max(score) across all primary/alt combinations
-       when the codebook supplies alternative codons for a word.
-  C2 — WordNet bridge: when codon-level score is low, use Wu-Palmer +
-       path-similarity over the cross-product of synsets (capped at 0.6).
-  C3 — shade tiebreaker: small shade-similarity bonus on partial matches.
-  C6 — ConceptNet bridge (opt-in): when WordNet bridge is also low, use
-       ConceptNet Numberbatch cosine (capped at 0.55). Disabled by default;
-       enable via ``conceptnet_bridge=True`` or env var
-       ``STRANDS_CONCEPTNET=1``.
+Two strands compared on a Raspberry Pi with no codebook, no runtime
+model, no sidecar files produce a meaningful similarity score from
+their bytes alone. The comparator does codon-hierarchy arithmetic plus
+in-strand cross-codon relatedness using the two related-codon slots
+each token carries (stamped at encode time from ConceptNet 5.7).
+
+Scoring tiers:
+  Tier 1 — Codon hierarchy (spec §8.1):
+    same domain                       0.25
+    + same category                   0.15
+    + same concept                    0.35
+    + shade similarity (concept)      0.25 × shade_sim
+    + shade similarity (partial)      0.05 × shade_sim
+  Tier 2 — In-strand related-codon match:
+    a's primary == b.related[i]       weight × 0.85 / 255
+    a.related[i] == b's primary       weight × 0.85 / 255
+    a.related[i] == b.related[j]      min(weights) × 0.55 / 255
+
+  The final per-pair score is max(Tier 1, Tier 2). Tier 1 wins on
+  synonyms; Tier 2 fills cross-domain relatedness without external
+  data.
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 
 from strands.codon import Codon
-from strands.relatedness import (
-    conceptnet_mean_vector,
-    conceptnet_word_similarity,
-    wordnet_similarity,
-    wordnet_word_similarity,
-)
 from strands.shade import shade_similarity
 from strands.strand import CodonEntry, Strand
 
 
-_CONCEPTNET_DEFAULT = os.environ.get("STRANDS_CONCEPTNET", "0") == "1"
+# Code-domain IDs for spec §8.3 rule 1 (structural codons get 1.5×).
+_CODE_DOMAIN_IDS: frozenset[int] = frozenset({
+    0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A,
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,20 +73,11 @@ class ComparisonResult:
         return "\n".join(lines)
 
 
-# Code domain IDs (spec §5.2). Used for structural-weight bonus (§8.3).
-_CODE_DOMAIN_IDS: frozenset[int] = frozenset({
-    0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A,
-})
-
-
-def _is_code_domain(domain: int) -> bool:
-    return domain in _CODE_DOMAIN_IDS
-
-
-def _codon_pair_score(a: Codon, b: Codon, shade_a: int, shade_b: int,
-                      *, code_weight: bool = False) -> float:
-    """Spec §8.1 plus C3 shade tiebreaker. Spec §8.3 rule 1 — when
-    ``code_weight`` is True, code-domain matches are weighted 1.5x."""
+def _hierarchy_score(
+    a: Codon, b: Codon, shade_a: int, shade_b: int,
+    *, code_weight: bool = False,
+) -> float:
+    """Tier 1: spec §8.1 codon hierarchy with shade tiebreaker."""
     if a.domain != b.domain:
         return 0.0
 
@@ -95,134 +93,74 @@ def _codon_pair_score(a: Codon, b: Codon, shade_a: int, shade_b: int,
     else:
         score += sh_sim * 0.05
 
-    if code_weight and _is_code_domain(a.domain):
+    if code_weight and a.domain in _CODE_DOMAIN_IDS:
         score = min(1.0, score * 1.5)
     return score
 
 
-def _pair_score(
-    a: CodonEntry,
-    b: CodonEntry,
-    *,
-    wordnet_bridge: bool = True,
-    conceptnet_bridge: bool = False,
-    code_aware: bool = False,
-    codebook=None,
-) -> float:
-    """C1 multi-sense + C2 WordNet bridge + C3 shade + codon adjacency.
-
-    When ``code_aware`` is True, applies spec §8.3 rule 1 (structural codons
-    get 1.5x weight). When a codebook with codon adjacency is supplied,
-    cross-domain related pairs draw their score from the built-in graph
-    instead of the runtime ConceptNet model."""
-    a_codons = (a.codon,) + a.alt_codons
-    b_codons = (b.codon,) + b.alt_codons
-
+def _relation_score(a: CodonEntry, b: CodonEntry) -> float:
+    """Tier 2: exact-codon match between either token's primary and the
+    other's stamped related codons. Reads ONLY the bytes already in the
+    two CodonEntry's — no codebook, no graph file, no model.
+    """
     best = 0.0
-    for ca in a_codons:
-        for cb in b_codons:
-            s = _codon_pair_score(ca, cb, a.shade, b.shade, code_weight=code_aware)
+
+    # a's related ↔ b's primary
+    for rel_codon, rel_w in a.related:
+        if rel_codon.is_null:
+            continue
+        if rel_codon == b.codon:
+            s = (rel_w / 255.0) * 0.85
             if s > best:
                 best = s
 
-    codon_best = best
+    # b's related ↔ a's primary
+    for rel_codon, rel_w in b.related:
+        if rel_codon.is_null:
+            continue
+        if rel_codon == a.codon:
+            s = (rel_w / 255.0) * 0.85
+            if s > best:
+                best = s
 
-    # Tier 3 — Optional runtime ConceptNet/Numberbatch. When enabled,
-    # delivers the strongest signal and replaces the codon-only score.
-    # Off by default; the built-in adjacency handles the same role with
-    # no runtime dependency.
-    if conceptnet_bridge and a.word and b.word:
-        cn = conceptnet_word_similarity(a.word, b.word)
-        if cn is not None and cn > 0:
-            return cn
-
-    # Tier 1.5 — Built-in codon adjacency. Strand-native graph derived
-    # from ConceptNet at build time, ships in the codebook JSON. Used
-    # when runtime CN is unavailable (default) and codon match is below
-    # concept level. Provides the relatedness signal cross-domain pairs
-    # need without any 1.2GB model download.
-    if codon_best < 0.75 and codebook is not None and getattr(codebook, "_adjacency", None):
-        adj_best = 0.0
-        for ca in a_codons:
-            ca_str = ca.to_str()
-            for cb in b_codons:
-                if ca == cb:
-                    continue
-                cb_str = cb.to_str()
-                w = codebook.codon_relatedness(ca_str, cb_str)
-                if w is not None and w > adj_best:
-                    adj_best = w
-        if adj_best > 0:
-            best = max(best, adj_best)
-
-    # Tier 2 — WordNet bridge (final fallback for OOV pairs).
-    if best < 0.40 and wordnet_bridge:
-        sim = None
-        if a.synset and b.synset:
-            sim = wordnet_similarity(a.synset, b.synset)
-        if sim is None and a.word and b.word:
-            sim = wordnet_word_similarity(a.word, b.word)
-        if sim is not None and sim > 0.30:
-            best = max(best, (sim - 0.30) / 0.70 * 0.85)
+    # a.related ∩ b.related (second-order — both tokens point at the
+    # same neighbor concept)
+    for ra, wa in a.related:
+        if ra.is_null:
+            continue
+        for rb, wb in b.related:
+            if rb.is_null:
+                continue
+            if ra == rb:
+                s = (min(wa, wb) / 255.0) * 0.55
+                if s > best:
+                    best = s
 
     return best
 
 
-# Auto-switch to sentence-mode (mean ConceptNet vector cosine) when either
-# strand has more than this many content codons. Sentence-mode is a much
-# stronger signal than greedy alignment for STS-style benchmarks.
-_SENTENCE_MODE_THRESHOLD = 4
+def _pair_score(a: CodonEntry, b: CodonEntry, *, code_aware: bool = False) -> float:
+    """Combine Tier 1 (hierarchy) and Tier 2 (in-strand relations).
+
+    Pure byte arithmetic — no external state."""
+    h = _hierarchy_score(a.codon, b.codon, a.shade, b.shade, code_weight=code_aware)
+    if h >= 0.75:
+        # Concept-level codon match — strand has spoken. Skip Tier 2.
+        return h
+    r = _relation_score(a, b)
+    return max(h, r)
 
 
 def compare_strands(
     strand_a: Strand,
     strand_b: Strand,
     *,
-    wordnet_bridge: bool = True,
-    conceptnet_bridge: bool | None = None,
-    sentence_mode: bool | None = None,
     code_aware: bool = False,
     pattern_bonus: float = 0.0,
-    codebook=None,
 ) -> ComparisonResult:
-    """Align two strands and produce a similarity score.
+    """Greedy alignment with in-strand relatedness scoring.
 
-    The default codebook ships a built-in codon→codon adjacency table
-    (derived from ConceptNet at build time) which provides cross-domain
-    relatedness without any runtime model dependency. ``conceptnet_bridge``
-    is now an optional fallback for OOV codons.
-    """
-    if conceptnet_bridge is None:
-        conceptnet_bridge = _CONCEPTNET_DEFAULT
-    if codebook is None:
-        from strands.codebook import default_codebook
-        try:
-            codebook = default_codebook()
-        except Exception:
-            codebook = None
-
-    if sentence_mode is None:
-        sentence_mode = (
-            conceptnet_bridge
-            and (
-                len(strand_a.codons) > _SENTENCE_MODE_THRESHOLD
-                or len(strand_b.codons) > _SENTENCE_MODE_THRESHOLD
-            )
-        )
-
-    if sentence_mode and conceptnet_bridge:
-        from strands.relatedness import conceptnet_mean_vector, vector_cosine
-
-        words_a = [c.word for c in strand_a.codons if c.word]
-        words_b = [c.word for c in strand_b.codons if c.word]
-        va = conceptnet_mean_vector(words_a)
-        vb = conceptnet_mean_vector(words_b)
-        if va is not None and vb is not None:
-            score = max(0.0, vector_cosine(va, vb))
-            return ComparisonResult(score=score, matches=[],
-                                    unmatched_a=[], unmatched_b=[])
-        # If CN vectors unavailable for either side, fall through to alignment.
-
+    Pure byte math — needs only the two strands as input."""
     matches: list[Match] = []
     used_b: set[int] = set()
     matched_a_idx: set[int] = set()
@@ -236,15 +174,8 @@ def compare_strands(
         for j, codon_b in enumerate(strand_b.codons):
             if j in used_b:
                 continue
-            s = _pair_score(
-                codon_a,
-                codon_b,
-                wordnet_bridge=wordnet_bridge,
-                conceptnet_bridge=conceptnet_bridge,
-                code_aware=code_aware,
-                codebook=codebook,
-            )
-            # Spec §8.3 rule 3: position-proximity bonus up to 0.05.
+            s = _pair_score(codon_a, codon_b, code_aware=code_aware)
+            # Spec §8.3 rule 3: position-proximity bonus for code.
             if code_aware and s > 0:
                 len_a = max(1, len(strand_a.codons))
                 len_b = max(1, len(strand_b.codons))
@@ -264,7 +195,6 @@ def compare_strands(
     max_len = max(len(strand_a.codons), len(strand_b.codons))
     overall = total_score / max_len if max_len > 0 else 0.0
 
-    # Spec §8.3 rule 2 — pattern bonus when both strands share a detected pattern.
     if pattern_bonus > 0:
         overall = min(1.0, overall + pattern_bonus)
 

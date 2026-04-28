@@ -40,4 +40,9 @@ def test_byte_size():
     s = _random_strand(5)
     raw = s.to_binary()
     assert len(raw) == s.byte_size
-    assert s.byte_size == 8 + 4 * 5
+    # v2 default: 8-byte header + 12 bytes per token
+    # v2 default: 8-byte header + 4 + 4*4 = 20 bytes per token
+    assert s.byte_size == 8 + 20 * 5
+    # v1 mode is also supported
+    raw_v1 = s.to_binary(version=1)
+    assert len(raw_v1) == 8 + 4 * 5

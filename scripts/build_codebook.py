@@ -47,9 +47,9 @@ def main() -> None:
         help="Layers to force-rebuild. 'all' clears every cached layer.",
     )
     parser.add_argument(
-        "--drop-adjacency",
+        "--drop-relations",
         action="store_true",
-        help="Do not preserve any existing codon_adjacency in the output.",
+        help="Do not preserve any existing rel fields from the prior output.",
     )
     args = parser.parse_args()
 
@@ -60,7 +60,7 @@ def main() -> None:
         use_cache=not args.no_cache,
         cache_dir=args.cache_dir,
         invalidate=args.invalidate or None,
-        preserve_adjacency=not args.drop_adjacency,
+        preserve_relations=not args.drop_relations,
     )
     elapsed = time.perf_counter() - t0
     print(

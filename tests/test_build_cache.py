@@ -159,24 +159,27 @@ def test_patch_overlay_applies(tmp_path):
     assert cb.lookup("elated") is not None
 
 
-def test_preserved_adjacency_round_trip(tmp_path):
-    """Writing a codebook with preserve_adjacency keeps any existing graph."""
+def test_preserved_relations_round_trip(tmp_path):
+    """Writing a codebook with preserve_relations keeps existing per-word
+    rel fields intact."""
     out_path = tmp_path / "codebook.json"
 
-    # First write — no adjacency
     assemble.write(
-        out_path, use_cache=True, cache_dir=tmp_path, preserve_adjacency=False,
+        out_path, use_cache=True, cache_dir=tmp_path,
+        preserve_relations=False,
     )
     written = json.loads(out_path.read_text())
-    assert "codon_adjacency" not in written
+    # Cherry-pick a known seed word that exists.
+    sample_word = next(iter(written.get("entries", {})))
 
-    # Inject an adjacency
-    written["codon_adjacency"] = {"EM000": [["EM001", 200]]}
+    # Inject a rel field
+    written["entries"][sample_word]["rel"] = [["EM001", 200], ["AC002", 150]]
     out_path.write_text(json.dumps(written))
 
-    # Rewrite preserving adjacency
+    # Rewrite, preserving relations
     assemble.write(
-        out_path, use_cache=True, cache_dir=tmp_path, preserve_adjacency=True,
+        out_path, use_cache=True, cache_dir=tmp_path,
+        preserve_relations=True,
     )
     after = json.loads(out_path.read_text())
-    assert after.get("codon_adjacency") == {"EM000": [["EM001", 200]]}
+    assert after["entries"][sample_word].get("rel") == [["EM001", 200], ["AC002", 150]]

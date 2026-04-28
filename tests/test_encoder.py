@@ -4,7 +4,8 @@ from strands.encoder import encode
 def test_encode_basic():
     result = encode("happy dog runs fast")
     assert len(result.strand.codons) >= 3
-    assert result.byte_size == 8 + 4 * len(result.strand.codons)
+    # strand v2 default: 8-byte header + 12 bytes per token
+    assert result.byte_size == 8 + 20 * len(result.strand.codons)
 
 
 def test_encode_handles_inflected_forms():

@@ -103,7 +103,6 @@ def _merge_layers(
     """Compose the final word -> entry dict from cached layers."""
     seed_words: set[str] = {w.lower() for words in ALL_SEEDS.values() for w in words}
     primary: dict[str, list] = wn["primary"]
-    alts: dict[str, list] = wn["alts"]
     synsets: dict[str, str] = wn["synsets"]
     polarity: dict[str, int] = sent["polarity"]
     formality: dict[str, int] = sent.get("formality", {})
@@ -123,9 +122,6 @@ def _merge_layers(
             "n": concept,
             "s": {
                 "p": polarity.get(word, 1),
-                # formality may be missing if loaded from an old cache —
-                # fall back to recomputing, but the new cache layer will
-                # populate it on next build.
                 "f": formality.get(word) if word in formality
                      else formality_from_frequency(word),
                 "i": _intensity_for(word),
@@ -133,12 +129,13 @@ def _merge_layers(
         }
         if (syn := synsets.get(word)):
             entry["syn"] = syn
-        if (alt_list := alts.get(word)):
-            entry["alt"] = [list(c) for c in alt_list]
         entries[word] = entry
 
     if include_inflections:
         # Apply rule-based inflectional variants from cached morphology layer.
+        # Variants inherit codon, shade, and synset from their base lemma.
+        # The ``rel`` field is not populated here — the build_strand_relations
+        # step (which runs after this) propagates it to variants.
         for variant, base, _pos in morph["edges"]:
             if variant in seed_words:
                 continue
@@ -153,8 +150,6 @@ def _merge_layers(
             }
             if "syn" in base_entry:
                 new_entry["syn"] = base_entry["syn"]
-            if "alt" in base_entry:
-                new_entry["alt"] = [list(a) for a in base_entry["alt"]]
             entries[variant] = new_entry
 
         # WordNet's irregular-form exception lists (e.g. went -> go).
@@ -300,11 +295,15 @@ def write(
     use_cache: bool = True,
     cache_dir: Path | None = None,
     invalidate: list[str] | None = None,
-    preserve_adjacency: bool = True,
+    preserve_relations: bool = True,
 ) -> dict:
-    """Write the codebook JSON. Preserves any existing ``codon_adjacency``
-    in the output file (so a seed-only rebuild doesn't drop the adjacency
-    graph that requires Numberbatch to recompute)."""
+    """Write the codebook JSON.
+
+    When ``preserve_relations`` is True (default), any ``rel`` fields in
+    an existing output file are carried over — so a seed-only rebuild
+    doesn't drop the ConceptNet-derived per-word relations (which take
+    ~1 minute to recompute via build_strand_relations.py).
+    """
     codebook = build(
         frequency_threshold=frequency_threshold,
         use_cache=use_cache,
@@ -315,14 +314,19 @@ def write(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if preserve_adjacency and output_path.exists():
+    if preserve_relations and output_path.exists():
         try:
             with output_path.open("r", encoding="utf-8") as f:
                 existing = json.load(f)
-            if (adj := existing.get("codon_adjacency")):
-                codebook["codon_adjacency"] = adj
-                stats = codebook.setdefault("stats", {})
-                stats["codon_adjacency_edges"] = sum(len(v) for v in adj.values())
+            existing_entries = existing.get("entries", {})
+            preserved = 0
+            for word, raw in codebook.get("entries", {}).items():
+                old = existing_entries.get(word)
+                if old and "rel" in old:
+                    raw["rel"] = old["rel"]
+                    preserved += 1
+            if preserved:
+                codebook.setdefault("stats", {})["preserved_rel_entries"] = preserved
         except (OSError, json.JSONDecodeError):
             pass
 

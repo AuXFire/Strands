@@ -30,7 +30,9 @@ DATASETS: dict[str, callable] = {
 
 
 def strand_score(a: str, b: str, *, conceptnet: bool = False) -> float:
-    return compare(a, b, conceptnet_bridge=conceptnet).score
+    # Pure strand-native compare; the conceptnet flag is ignored — kept
+    # only for backwards-compatible CLI parity.
+    return compare(a, b).score
 
 
 def glove_cos(model, a: str, b: str) -> float | None:
