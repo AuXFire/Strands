@@ -1,6 +1,11 @@
 # Semantic Strands — Comprehensive Benchmark Report
 
-**Bottom line:** Strand+ConceptNet beats GloVe-300 on **all 12 directly-comparable benchmarks** — 5 word similarity, 5 sentence STS, NL→Code retrieval, and BigCloneBench F1 (with the document-fingerprint clone signal). Strand ties GloVe on cross-language algorithm separation. Storage stays at **4 bytes/word** (300× smaller than GloVe-300).
+**Bottom line:** Strand+ConceptNet beats GloVe-300 on **12 of 13 benchmarks** and ties on the 13th. Zero losses. Average ρ/MRR/F1: strand **0.638** vs GloVe-300 0.522 (+0.116). Storage stays at **4 bytes/word** (300× smaller than GloVe-300). Final result from `python scripts/comprehensive_benchmark.py`:
+
+```
+TOTAL: 13 benchmarks  |  WINS = 12  TIES = 1  LOSSES = 0
+Average score:  strand = 0.6375   GloVe-300 = 0.5216   diff = +0.1160
+```
 
 ## Methodology
 
