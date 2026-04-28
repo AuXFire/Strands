@@ -16,7 +16,12 @@ def main() -> None:
         type=Path,
         default=Path(__file__).parent.parent / "strands" / "data" / "codebook_v0.1.0.json",
     )
-    parser.add_argument("--frequency-threshold", type=float, default=2.0)
+    parser.add_argument(
+        "--frequency-threshold",
+        type=float,
+        default=None,
+        help="Drop non-seed entries below this Zipf frequency. Default: full vocab.",
+    )
     args = parser.parse_args()
 
     codebook = write(args.output, frequency_threshold=args.frequency_threshold)

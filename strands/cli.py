@@ -132,8 +132,14 @@ def search_cmd(corpus: str, query: str, top_k: int, threshold: float) -> None:
     default=str(Path(__file__).parent / "data" / "codebook_v0.1.0.json"),
     show_default=True,
 )
-@click.option("--frequency-threshold", type=float, default=2.0, show_default=True)
-def build_codebook_cmd(output: str, frequency_threshold: float) -> None:
+@click.option(
+    "--frequency-threshold",
+    type=float,
+    default=None,
+    help="Drop non-seed entries below this Zipf frequency. Default: include "
+    "the full WordNet vocabulary.",
+)
+def build_codebook_cmd(output: str, frequency_threshold: float | None) -> None:
     """Build the codebook JSON from seed concepts + WordNet."""
     from strands.build.assemble import write
 
