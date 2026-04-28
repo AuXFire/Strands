@@ -174,44 +174,74 @@ def _nb_lookup(model, word: str):
 
 @lru_cache(maxsize=8192)
 def conceptnet_word_similarity(word_a: str, word_b: str) -> float | None:
-    """Cosine similarity in ConceptNet Numberbatch.
+    """Cosine similarity from ConceptNet vectors.
 
-    Returns None if the model isn't loaded or either word isn't in vocab.
-    Negative cosines are clamped to 0 (treat as unrelated, not opposed).
+    Strategy:
+      1. Try the codebook's embedded per-word vectors (PCA-reduced,
+         int8-quantized, ~16 MB sidecar). Pure strand-native, no runtime
+         model dependency.
+      2. If embedded vectors aren't present for one or both words, fall
+         back to the runtime Numberbatch model (only loaded if available).
+      3. Return None if neither path can resolve both words.
     """
+    import numpy as np
+
+    # Tier 1: codebook-embedded vectors. Preferred — these ship with the
+    # codebook, no runtime model load needed.
+    try:
+        from strands.codebook import default_codebook
+        cb = default_codebook()
+    except Exception:
+        cb = None
+
+    if cb is not None and cb.has_embedded_vectors:
+        va = cb.embedded_vector(word_a)
+        vb = cb.embedded_vector(word_b)
+        if va is not None and vb is not None:
+            denom = np.linalg.norm(va) * np.linalg.norm(vb)
+            if denom > 0:
+                cos = float(np.dot(va, vb) / denom)
+                return max(0.0, cos)
+
+    # Tier 2: runtime Numberbatch (only if available + opted in).
     model = _load_numberbatch()
     if model is None:
         return None
 
-    import numpy as np
-
-    va = _nb_lookup(model, word_a)
-    vb = _nb_lookup(model, word_b)
-    if va is None or vb is None:
+    rva = _nb_lookup(model, word_a)
+    rvb = _nb_lookup(model, word_b)
+    if rva is None or rvb is None:
         return None
 
-    denom = np.linalg.norm(va) * np.linalg.norm(vb)
+    denom = np.linalg.norm(rva) * np.linalg.norm(rvb)
     if denom == 0:
         return None
-    cos = float(np.dot(va, vb) / denom)
+    cos = float(np.dot(rva, rvb) / denom)
     return max(0.0, cos)
 
 
 def is_conceptnet_available() -> bool:
+    """True if either the codebook ships embedded vectors *or* the runtime
+    model is loadable. Embedded vectors take precedence."""
+    try:
+        from strands.codebook import default_codebook
+        if default_codebook().has_embedded_vectors:
+            return True
+    except Exception:
+        pass
     return _load_numberbatch() is not None
 
 
 def conceptnet_mean_vector(words: list[str], *, sif: bool = True, sif_a: float = 1e-3):
     """Mean ConceptNet vector across the words.
 
+    Prefers codebook-embedded vectors (no runtime model). Falls back to
+    runtime Numberbatch when a word is missing from the embedding table.
+
     When ``sif=True`` (default), apply smooth-inverse-frequency weighting
     (Arora et al. 2017): weight = a / (a + p(w)) where p(w) is unigram
-    probability. Down-weights frequent function words for sentence-level
-    similarity. Significantly outperforms naive mean on STS.
+    probability.
     """
-    model = _load_numberbatch()
-    if model is None:
-        return None
     import numpy as np
 
     if sif:
@@ -220,12 +250,33 @@ def conceptnet_mean_vector(words: list[str], *, sif: bool = True, sif_a: float =
         except ImportError:
             sif = False
 
+    # Try codebook-embedded vectors first.
+    cb = None
+    try:
+        from strands.codebook import default_codebook
+        cb = default_codebook()
+        if not cb.has_embedded_vectors:
+            cb = None
+    except Exception:
+        cb = None
+
+    model = _load_numberbatch() if cb is None else None  # only load if no CB embeddings
+
     vecs = []
     weights = []
     for w in words:
         if not w:
             continue
-        v = _nb_lookup(model, w)
+        v = None
+        if cb is not None:
+            v = cb.embedded_vector(w)
+        if v is None and model is not None:
+            v = _nb_lookup(model, w)
+        if v is None and model is None:
+            # Last resort: try loading runtime model now.
+            model = _load_numberbatch()
+            if model is not None:
+                v = _nb_lookup(model, w)
         if v is None:
             continue
         vecs.append(v)
@@ -236,8 +287,13 @@ def conceptnet_mean_vector(words: list[str], *, sif: bool = True, sif_a: float =
             weights.append(1.0)
     if not vecs:
         return None
-    arr = np.array(vecs)
-    w_arr = np.array(weights)
+    # Vectors may be different dimensions if mixed (embedded 64-d vs
+    # runtime 300-d). Stick to the first dimensionality seen.
+    target_dim = len(vecs[0])
+    vecs = [v for v in vecs if len(v) == target_dim]
+    weights = weights[: len(vecs)]
+    arr = np.asarray(vecs)
+    w_arr = np.asarray(weights)
     return (arr * w_arr[:, None]).sum(axis=0) / w_arr.sum()
 
 

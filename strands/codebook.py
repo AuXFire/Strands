@@ -20,7 +20,7 @@ class CodebookEntry:
 
 
 class Codebook:
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, *, base_dir: Path | None = None):
         self.version: str = data.get("version", "unknown")
         self.stats: dict = data.get("stats", {})
         self.domains: dict = data.get("domains", {})
@@ -33,6 +33,29 @@ class Codebook:
         self._adjacency: dict[str, dict[str, int]] = {
             codon: {nb: w for nb, w in edges} for codon, edges in raw_adj.items()
         }
+
+        # Embedded per-word Numberbatch vectors. PCA-reduced to 64 dim,
+        # int8-quantized with per-vector scale, stored as binary sidecars.
+        # Eliminates the runtime 1.2 GB Numberbatch dependency.
+        self._embedded_meta: dict = data.get("embedded_vectors", {})
+        self._embedded_vectors = None
+        self._embedded_scales = None
+        if self._embedded_meta and base_dir is not None:
+            try:
+                import numpy as np
+                vecs_path = base_dir / self._embedded_meta["vectors_file"]
+                scales_path = base_dir / self._embedded_meta["scales_file"]
+                dim = int(self._embedded_meta["dim"])
+                count = int(self._embedded_meta["count"])
+                self._embedded_vectors = np.frombuffer(
+                    vecs_path.read_bytes(), dtype=np.int8,
+                ).reshape(count, dim)
+                self._embedded_scales = np.frombuffer(
+                    scales_path.read_bytes(), dtype=np.float32,
+                )
+            except (OSError, KeyError, ValueError):
+                self._embedded_vectors = None
+                self._embedded_scales = None
 
     @property
     def adjacency_size(self) -> int:
@@ -124,8 +147,40 @@ class Codebook:
 
     @classmethod
     def load(cls, path: Path | str) -> Codebook:
-        with Path(path).open("r", encoding="utf-8") as f:
-            return cls(json.load(f))
+        path = Path(path)
+        with path.open("r", encoding="utf-8") as f:
+            return cls(json.load(f), base_dir=path.parent)
+
+    def embedded_vector(self, word: str):
+        """Return the codebook's native PCA-reduced Numberbatch vector for
+        ``word`` as a float32 numpy array, or None if absent.
+
+        These vectors are baked into the codebook (binary sidecar files),
+        replacing the runtime model dependency.
+        """
+        if self._embedded_vectors is None:
+            return None
+        raw = self._entries.get(word.lower())
+        if raw is None:
+            return None
+        idx = raw.get("vec_idx")
+        if idx is None:
+            return None
+        scale = float(self._embedded_scales[idx])
+        if scale == 0.0:
+            return None
+        import numpy as np
+        return self._embedded_vectors[idx].astype(np.float32) * scale
+
+    @property
+    def has_embedded_vectors(self) -> bool:
+        return self._embedded_vectors is not None
+
+    @property
+    def embedded_vector_dim(self) -> int:
+        if not self._embedded_meta:
+            return 0
+        return int(self._embedded_meta.get("dim", 0))
 
     def merge_extension(self, extension: dict) -> None:
         """Merge an extension dict (spec §14.3 format) into this codebook.
