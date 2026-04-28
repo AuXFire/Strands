@@ -10,7 +10,7 @@ from statistics import mean
 import gensim.downloader as api
 import numpy as np
 
-from strands import compare_strands, encode_code
+from strands import clone_similarity, encode_code
 
 FIXTURE = Path(__file__).parent.parent / "tests" / "fixtures" / "code_algorithms.json"
 _TOK = re.compile(r"[A-Za-z]+")
@@ -37,8 +37,7 @@ def main():
 
     s_within, s_across, g_within, g_across = [], [], [], []
     for (algo_a, lang_a, _), (algo_b, lang_b, _) in combinations(items, 2):
-        s = compare_strands(strands[(algo_a, lang_a)], strands[(algo_b, lang_b)],
-                            code_aware=True).score
+        s = clone_similarity(strands[(algo_a, lang_a)], strands[(algo_b, lang_b)])
         g = cos(vecs[(algo_a, lang_a)], vecs[(algo_b, lang_b)])
         if algo_a == algo_b and lang_a != lang_b:
             s_within.append(s); g_within.append(g)

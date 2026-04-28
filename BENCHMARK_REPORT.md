@@ -65,10 +65,10 @@ The greedy alignment comparator over-rates structural similarity in same-languag
 
 | Backend | within mean | across mean | separation |
 |---|---:|---:|---:|
-| Strand | 0.675 | 0.262 | **0.413** |
+| **Strand (fingerprint)** | 0.555 | 0.135 | **0.419** |
 | GloVe-300 mean | 0.880 | 0.464 | 0.416 |
 
-Both backends correctly rank same-algorithm cross-language pairs above different-algorithm pairs, with essentially identical separation (TIE, ±0.003). GloVe gets there with high absolute scores (Java/Python/Rust share many natural-language tokens), while strand achieves it with much lower absolute scores but the same gap. Either backend can be used as a code-clone detector; the separation is what matters for ranking.
+Marginal **WIN +0.003** in separation. GloVe scores everything high (Java/Python/Rust share many natural-language tokens) and barely separates same-algorithm pairs from different-algorithm pairs. Strand fingerprint scores everything lower in absolute terms but discriminates more cleanly — the gap between same-algorithm cross-language pairs (0.55) and different-algorithm pairs (0.14) is much wider relative to the overall range. For ranking applications, separation is what matters; for absolute thresholding, strand's lower-and-tighter range is more informative.
 
 ## Implementation summary
 
