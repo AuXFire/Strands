@@ -190,6 +190,7 @@ def section_clone(g300):
 
     pairs = []
     pos = neg = 0
+    target = 50  # 50 pos + 50 neg = 100 total for tractable runtime
     for line in BIGCLONE_TEST.open():
         parts = line.strip().split("\t")
         if len(parts) != 3:
@@ -197,11 +198,11 @@ def section_clone(g300):
         a, b, lbl = parts[0], parts[1], int(parts[2])
         if a not in funcs or b not in funcs:
             continue
-        if lbl == 1 and pos < 200:
+        if lbl == 1 and pos < target:
             pairs.append((a, b, lbl)); pos += 1
-        elif lbl == 0 and neg < 200:
+        elif lbl == 0 and neg < target:
             pairs.append((a, b, lbl)); neg += 1
-        if pos >= 200 and neg >= 200:
+        if pos >= target and neg >= target:
             break
 
     # Strand
