@@ -32,6 +32,10 @@ LANGUAGE_KEYWORDS: dict[str, set[str]] = {
         "finally", "for", "from", "global", "if", "import", "in", "is",
         "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
         "while", "with", "yield", "match", "case",
+        # Python-specific overlay
+        "self", "cls", "type", "isinstance", "issubclass", "super",
+        "property", "staticmethod", "classmethod", "abstractmethod",
+        "iter", "next", "len", "range", "enumerate", "zip", "map", "filter",
     },
     "javascript": {
         "abstract", "async", "await", "break", "case", "catch", "class",
@@ -53,6 +57,9 @@ LANGUAGE_KEYWORDS: dict[str, set[str]] = {
         "public", "readonly", "return", "static", "string", "super",
         "switch", "this", "throw", "true", "try", "type", "typeof",
         "undefined", "unknown", "var", "void", "while", "with", "yield",
+        # TypeScript-specific overlay
+        "infer", "satisfies", "never", "object", "symbol", "bigint",
+        "module", "require", "global", "this", "void",
     },
     "rust": {
         "as", "async", "await", "break", "const", "continue", "crate", "dyn",
@@ -60,12 +67,19 @@ LANGUAGE_KEYWORDS: dict[str, set[str]] = {
         "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
         "self", "Self", "static", "struct", "super", "trait", "true", "type",
         "unsafe", "use", "where", "while",
+        # Rust-specific overlay
+        "lifetime", "box", "rc", "arc", "cell", "refcell", "vec", "vec!",
+        "option", "result", "ok", "err", "some", "none", "unwrap", "expect",
+        "derive", "default", "clone", "copy", "drop", "into", "from",
     },
     "go": {
         "break", "case", "chan", "const", "continue", "default", "defer",
         "else", "fallthrough", "for", "func", "go", "goto", "if", "import",
         "interface", "map", "package", "range", "return", "select", "struct",
         "switch", "type", "var",
+        # Go-specific overlay
+        "goroutine", "make", "new", "len", "cap", "append", "copy", "delete",
+        "panic", "recover", "nil", "iota", "fmt", "println", "printf",
     },
     "java": {
         "abstract", "assert", "boolean", "break", "byte", "case", "catch",
@@ -95,6 +109,9 @@ LANGUAGE_KEYWORDS: dict[str, set[str]] = {
         "static_cast", "struct", "switch", "template", "this", "throw", "true",
         "try", "typedef", "typeid", "typename", "union", "unsigned", "using",
         "virtual", "void", "volatile", "while", "xor",
+        # C++-specific overlay
+        "thread_local", "consteval", "concept", "requires", "co_await",
+        "co_yield", "co_return", "shared_ptr", "unique_ptr", "make_shared",
     },
 }
 
@@ -121,6 +138,7 @@ class CodeEncodeResult:
     unknowns: list[str] = field(default_factory=list)
     structural_count: int = 0
     semantic_count: int = 0
+    patterns_detected: set[str] = field(default_factory=set)
 
     @property
     def byte_size(self) -> int:
@@ -227,6 +245,8 @@ def encode_code(
                     )
                     semantic += 1
 
+    from strands.code_patterns import detect_patterns
+
     return CodeEncodeResult(
         strand=Strand(codons=entries),
         text=source,
@@ -234,4 +254,5 @@ def encode_code(
         unknowns=unknowns,
         structural_count=structural,
         semantic_count=semantic,
+        patterns_detected=detect_patterns(source),
     )

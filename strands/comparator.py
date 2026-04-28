@@ -66,8 +66,20 @@ class ComparisonResult:
         return "\n".join(lines)
 
 
-def _codon_pair_score(a: Codon, b: Codon, shade_a: int, shade_b: int) -> float:
-    """Spec §8.1 plus C3 shade tiebreaker."""
+# Code domain IDs (spec §5.2). Used for structural-weight bonus (§8.3).
+_CODE_DOMAIN_IDS: frozenset[int] = frozenset({
+    0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A,
+})
+
+
+def _is_code_domain(domain: int) -> bool:
+    return domain in _CODE_DOMAIN_IDS
+
+
+def _codon_pair_score(a: Codon, b: Codon, shade_a: int, shade_b: int,
+                      *, code_weight: bool = False) -> float:
+    """Spec §8.1 plus C3 shade tiebreaker. Spec §8.3 rule 1 — when
+    ``code_weight`` is True, code-domain matches are weighted 1.5x."""
     if a.domain != b.domain:
         return 0.0
 
@@ -82,6 +94,9 @@ def _codon_pair_score(a: Codon, b: Codon, shade_a: int, shade_b: int) -> float:
             score += sh_sim * 0.05
     else:
         score += sh_sim * 0.05
+
+    if code_weight and _is_code_domain(a.domain):
+        score = min(1.0, score * 1.5)
     return score
 
 
@@ -91,15 +106,19 @@ def _pair_score(
     *,
     wordnet_bridge: bool = True,
     conceptnet_bridge: bool = False,
+    code_aware: bool = False,
 ) -> float:
-    """C1 multi-sense + C2 WordNet bridge + C3 shade + C6 ConceptNet bridge."""
+    """C1 multi-sense + C2 WordNet bridge + C3 shade + C6 ConceptNet bridge.
+
+    When ``code_aware`` is True, applies spec §8.3 rule 1 (structural codons
+    get 1.5x weight)."""
     a_codons = (a.codon,) + a.alt_codons
     b_codons = (b.codon,) + b.alt_codons
 
     best = 0.0
     for ca in a_codons:
         for cb in b_codons:
-            s = _codon_pair_score(ca, cb, a.shade, b.shade)
+            s = _codon_pair_score(ca, cb, a.shade, b.shade, code_weight=code_aware)
             if s > best:
                 best = s
 
@@ -150,6 +169,8 @@ def compare_strands(
     wordnet_bridge: bool = True,
     conceptnet_bridge: bool | None = None,
     sentence_mode: bool | None = None,
+    code_aware: bool = False,
+    pattern_bonus: float = 0.0,
 ) -> ComparisonResult:
     """Align two strands and produce a similarity score.
 
@@ -201,7 +222,14 @@ def compare_strands(
                 codon_b,
                 wordnet_bridge=wordnet_bridge,
                 conceptnet_bridge=conceptnet_bridge,
+                code_aware=code_aware,
             )
+            # Spec §8.3 rule 3: position-proximity bonus up to 0.05.
+            if code_aware and s > 0:
+                len_a = max(1, len(strand_a.codons))
+                len_b = max(1, len(strand_b.codons))
+                pos_diff = abs(i / len_a - j / len_b)
+                s += 0.05 * (1.0 - pos_diff)
             if s > best_score:
                 best_score = s
                 best_j = j
@@ -215,6 +243,10 @@ def compare_strands(
 
     max_len = max(len(strand_a.codons), len(strand_b.codons))
     overall = total_score / max_len if max_len > 0 else 0.0
+
+    # Spec §8.3 rule 2 — pattern bonus when both strands share a detected pattern.
+    if pattern_bonus > 0:
+        overall = min(1.0, overall + pattern_bonus)
 
     unmatched_a = [
         codon for i, codon in enumerate(strand_a.codons) if i not in matched_a_idx

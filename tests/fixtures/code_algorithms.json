@@ -1,0 +1,47 @@
+{
+  "description": "Same algorithm in N languages. Within-algorithm pairs should score >= 0.45; cross-algorithm pairs should score <= 0.40.",
+  "algorithms": {
+    "fibonacci": {
+      "python": "def fib(n):\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)",
+      "javascript": "function fib(n) {\n  if (n < 2) return n;\n  return fib(n - 1) + fib(n - 2);\n}",
+      "rust": "fn fib(n: u64) -> u64 {\n    if n < 2 { return n; }\n    fib(n - 1) + fib(n - 2)\n}",
+      "go": "func fib(n int) int {\n    if n < 2 { return n }\n    return fib(n-1) + fib(n-2)\n}",
+      "java": "static int fib(int n) {\n    if (n < 2) return n;\n    return fib(n - 1) + fib(n - 2);\n}",
+      "c": "int fib(int n) {\n    if (n < 2) return n;\n    return fib(n - 1) + fib(n - 2);\n}"
+    },
+    "binary_search": {
+      "python": "def binary_search(arr, target):\n    lo, hi = 0, len(arr) - 1\n    while lo <= hi:\n        mid = (lo + hi) // 2\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            lo = mid + 1\n        else:\n            hi = mid - 1\n    return -1",
+      "javascript": "function binarySearch(arr, target) {\n  let lo = 0, hi = arr.length - 1;\n  while (lo <= hi) {\n    const mid = Math.floor((lo + hi) / 2);\n    if (arr[mid] === target) return mid;\n    else if (arr[mid] < target) lo = mid + 1;\n    else hi = mid - 1;\n  }\n  return -1;\n}",
+      "rust": "fn binary_search(arr: &[i32], target: i32) -> i32 {\n    let mut lo = 0i32;\n    let mut hi = arr.len() as i32 - 1;\n    while lo <= hi {\n        let mid = (lo + hi) / 2;\n        if arr[mid as usize] == target { return mid; }\n        else if arr[mid as usize] < target { lo = mid + 1; }\n        else { hi = mid - 1; }\n    }\n    -1\n}",
+      "go": "func binarySearch(arr []int, target int) int {\n    lo, hi := 0, len(arr) - 1\n    for lo <= hi {\n        mid := (lo + hi) / 2\n        if arr[mid] == target { return mid }\n        if arr[mid] < target { lo = mid + 1 } else { hi = mid - 1 }\n    }\n    return -1\n}",
+      "java": "static int binarySearch(int[] arr, int target) {\n    int lo = 0, hi = arr.length - 1;\n    while (lo <= hi) {\n        int mid = (lo + hi) / 2;\n        if (arr[mid] == target) return mid;\n        else if (arr[mid] < target) lo = mid + 1;\n        else hi = mid - 1;\n    }\n    return -1;\n}",
+      "c": "int binary_search(int* arr, int n, int target) {\n    int lo = 0, hi = n - 1;\n    while (lo <= hi) {\n        int mid = (lo + hi) / 2;\n        if (arr[mid] == target) return mid;\n        else if (arr[mid] < target) lo = mid + 1;\n        else hi = mid - 1;\n    }\n    return -1;\n}"
+    },
+    "fetch_url": {
+      "python": "import requests\nasync def fetch_url(url):\n    response = requests.get(url)\n    if response.status_code != 200:\n        raise Exception('fetch failed')\n    return response.json()",
+      "javascript": "async function fetchUrl(url) {\n  const response = await fetch(url);\n  if (!response.ok) {\n    throw new Error('fetch failed');\n  }\n  return response.json();\n}",
+      "rust": "async fn fetch_url(url: &str) -> Result<Value, Error> {\n    let response = reqwest::get(url).await?;\n    if !response.status().is_success() {\n        return Err(Error::FetchFailed);\n    }\n    response.json().await\n}",
+      "go": "func fetchURL(url string) (map[string]any, error) {\n    response, err := http.Get(url)\n    if err != nil { return nil, err }\n    if response.StatusCode != 200 {\n        return nil, fmt.Errorf(\"fetch failed\")\n    }\n    var result map[string]any\n    json.NewDecoder(response.Body).Decode(&result)\n    return result, nil\n}",
+      "java": "static JsonObject fetchUrl(String url) throws Exception {\n    HttpClient client = HttpClient.newHttpClient();\n    HttpRequest request = HttpRequest.newBuilder().uri(URI.create(url)).build();\n    HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());\n    if (response.statusCode() != 200) throw new Exception(\"fetch failed\");\n    return JsonParser.parseString(response.body()).getAsJsonObject();\n}"
+    },
+    "parse_json": {
+      "python": "import json\ndef parse_json(text):\n    try:\n        return json.loads(text)\n    except json.JSONDecodeError as err:\n        raise ValueError(f'invalid json: {err}')",
+      "javascript": "function parseJson(text) {\n  try {\n    return JSON.parse(text);\n  } catch (err) {\n    throw new Error('invalid json: ' + err.message);\n  }\n}",
+      "rust": "fn parse_json(text: &str) -> Result<Value, Error> {\n    serde_json::from_str(text).map_err(|err| Error::InvalidJson(err.to_string()))\n}",
+      "go": "func parseJson(text string) (map[string]any, error) {\n    var result map[string]any\n    if err := json.Unmarshal([]byte(text), &result); err != nil {\n        return nil, fmt.Errorf(\"invalid json: %w\", err)\n    }\n    return result, nil\n}",
+      "java": "static JsonObject parseJson(String text) {\n    try {\n        return JsonParser.parseString(text).getAsJsonObject();\n    } catch (JsonSyntaxException err) {\n        throw new RuntimeException(\"invalid json: \" + err.getMessage());\n    }\n}"
+    },
+    "merge_sort": {
+      "python": "def merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    mid = len(arr) // 2\n    left = merge_sort(arr[:mid])\n    right = merge_sort(arr[mid:])\n    return merge(left, right)\n\ndef merge(left, right):\n    result = []\n    i = j = 0\n    while i < len(left) and j < len(right):\n        if left[i] <= right[j]:\n            result.append(left[i])\n            i += 1\n        else:\n            result.append(right[j])\n            j += 1\n    result.extend(left[i:])\n    result.extend(right[j:])\n    return result",
+      "javascript": "function mergeSort(arr) {\n  if (arr.length <= 1) return arr;\n  const mid = Math.floor(arr.length / 2);\n  const left = mergeSort(arr.slice(0, mid));\n  const right = mergeSort(arr.slice(mid));\n  return merge(left, right);\n}\nfunction merge(left, right) {\n  const result = [];\n  let i = 0, j = 0;\n  while (i < left.length && j < right.length) {\n    if (left[i] <= right[j]) { result.push(left[i++]); }\n    else { result.push(right[j++]); }\n  }\n  return result.concat(left.slice(i)).concat(right.slice(j));\n}",
+      "rust": "fn merge_sort(arr: Vec<i32>) -> Vec<i32> {\n    if arr.len() <= 1 { return arr; }\n    let mid = arr.len() / 2;\n    let left = merge_sort(arr[..mid].to_vec());\n    let right = merge_sort(arr[mid..].to_vec());\n    merge(left, right)\n}\nfn merge(left: Vec<i32>, right: Vec<i32>) -> Vec<i32> {\n    let mut result = Vec::new();\n    let mut i = 0; let mut j = 0;\n    while i < left.len() && j < right.len() {\n        if left[i] <= right[j] { result.push(left[i]); i += 1; }\n        else { result.push(right[j]); j += 1; }\n    }\n    result.extend(&left[i..]);\n    result.extend(&right[j..]);\n    result\n}",
+      "java": "static int[] mergeSort(int[] arr) {\n    if (arr.length <= 1) return arr;\n    int mid = arr.length / 2;\n    int[] left = mergeSort(Arrays.copyOfRange(arr, 0, mid));\n    int[] right = mergeSort(Arrays.copyOfRange(arr, mid, arr.length));\n    return merge(left, right);\n}\nstatic int[] merge(int[] left, int[] right) {\n    int[] result = new int[left.length + right.length];\n    int i = 0, j = 0, k = 0;\n    while (i < left.length && j < right.length) {\n        if (left[i] <= right[j]) result[k++] = left[i++];\n        else result[k++] = right[j++];\n    }\n    while (i < left.length) result[k++] = left[i++];\n    while (j < right.length) result[k++] = right[j++];\n    return result;\n}"
+    },
+    "bst_insert": {
+      "python": "class Node:\n    def __init__(self, value):\n        self.value = value\n        self.left = None\n        self.right = None\n\ndef insert(node, value):\n    if node is None:\n        return Node(value)\n    if value < node.value:\n        node.left = insert(node.left, value)\n    elif value > node.value:\n        node.right = insert(node.right, value)\n    return node",
+      "javascript": "class Node {\n  constructor(value) { this.value = value; this.left = null; this.right = null; }\n}\nfunction insert(node, value) {\n  if (node === null) return new Node(value);\n  if (value < node.value) node.left = insert(node.left, value);\n  else if (value > node.value) node.right = insert(node.right, value);\n  return node;\n}",
+      "rust": "struct Node { value: i32, left: Option<Box<Node>>, right: Option<Box<Node>> }\nfn insert(node: Option<Box<Node>>, value: i32) -> Option<Box<Node>> {\n    match node {\n        None => Some(Box::new(Node { value, left: None, right: None })),\n        Some(mut n) => {\n            if value < n.value { n.left = insert(n.left, value); }\n            else if value > n.value { n.right = insert(n.right, value); }\n            Some(n)\n        }\n    }\n}",
+      "java": "class Node { int value; Node left, right; Node(int v) { value = v; } }\nstatic Node insert(Node node, int value) {\n    if (node == null) return new Node(value);\n    if (value < node.value) node.left = insert(node.left, value);\n    else if (value > node.value) node.right = insert(node.right, value);\n    return node;\n}"
+    }
+  }
+}
