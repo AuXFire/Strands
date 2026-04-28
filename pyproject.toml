@@ -26,6 +26,9 @@ dev = [
 [project.scripts]
 strand = "strands.cli:main"
 
+[tool.hatch.build.targets.wheel]
+packages = ["strands"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
