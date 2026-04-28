@@ -4,6 +4,7 @@ from strands.code_encoder import CodeEncodeResult, detect_language, encode_code
 from strands.codebook import Codebook, default_codebook
 from strands.codon import DOMAIN_CODES, DOMAIN_NAMES, Codon
 from strands.comparator import ComparisonResult, Match, compare_strands
+from strands.document import DocumentFingerprint, clone_similarity
 from strands.encoder import EncodeResult, encode
 from strands.identifier import split_identifier
 from strands.index import InMemoryIndex, IndexEntry, SearchResult

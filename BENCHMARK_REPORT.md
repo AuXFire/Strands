@@ -1,6 +1,6 @@
 # Semantic Strands — Comprehensive Benchmark Report
 
-**Bottom line:** Strand+ConceptNet beats GloVe-300 (1,200 B/word) on **every** wired benchmark — 5 word similarity datasets, 5 sentence STS datasets, NL→Code retrieval, code clone detection, and the internal cross-language algorithm fixture. Storage stays at **4 bytes/word** (300× smaller than GloVe-300).
+**Bottom line:** Strand+ConceptNet beats GloVe-300 on **all 12 directly-comparable benchmarks** — 5 word similarity, 5 sentence STS, NL→Code retrieval, and BigCloneBench F1 (with the document-fingerprint clone signal). Strand ties GloVe on cross-language algorithm separation. Storage stays at **4 bytes/word** (300× smaller than GloVe-300).
 
 ## Methodology
 
@@ -55,18 +55,20 @@ Spec §12.3 target is MRR ≥ 0.25; strand exceeds it.
 
 ### D. Code Clone Detection — BigCloneBench (best F1)
 
-| Benchmark | pairs | Strand | spec target | verdict |
-|---|---:|---:|---:|---|
-| BigCloneBench | 400 | **0.667** | ≥ 0.50 | **PASS** |
+| Benchmark | pairs | Strand | GloVe-300 | spec target | verdict |
+|---|---:|---:|---:|---:|---|
+| BigCloneBench | 200 | **0.785** (th 0.15) | 0.683 (th 0.50) | ≥ 0.50 | **WIN +0.10** |
+
+The greedy alignment comparator over-rates structural similarity in same-language code (Java functions all share Java keywords whether or not they're clones). Switching to **document-fingerprint similarity** — Jaccard over the top-16 most-frequent codons of each function — focuses on the per-document distinctive codons (mostly identifier-derived) and discriminates clones from non-clones cleanly. Exposed as `strands.clone_similarity()`.
 
 ### E. Cross-language Algorithm Fixture (within − across)
 
 | Backend | within mean | across mean | separation |
 |---|---:|---:|---:|
-| **Strand** | **0.631** | 0.233 | **+0.398** |
-| GloVe-300 mean | 0.866 | 0.760 | +0.106 |
+| Strand | 0.675 | 0.262 | **0.413** |
+| GloVe-300 mean | 0.880 | 0.464 | 0.416 |
 
-GloVe scores everything high (Java/Python/Rust share many natural-language tokens) and barely separates same-algorithm pairs from different-algorithm pairs. Strand routes structural keywords through code domains and identifiers through text domains, giving a much sharper separation.
+Both backends correctly rank same-algorithm cross-language pairs above different-algorithm pairs, with essentially identical separation (TIE, ±0.003). GloVe gets there with high absolute scores (Java/Python/Rust share many natural-language tokens), while strand achieves it with much lower absolute scores but the same gap. Either backend can be used as a code-clone detector; the separation is what matters for ranking.
 
 ## Implementation summary
 

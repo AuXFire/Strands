@@ -8,7 +8,8 @@ from pathlib import Path
 import gensim.downloader as api
 import numpy as np
 
-from strands import compare_strands, encode_code
+from strands import encode_code
+from strands.document import clone_similarity
 
 DATA_DIR = Path(__file__).parent.parent / "tests" / "benchmarks" / "data"
 DATA_FILE = DATA_DIR / "bigclone_data.jsonl"
@@ -65,7 +66,10 @@ def main():
 
     needed = {a for a, _, _ in pairs} | {b for _, b, _ in pairs}
     strands = {fid: encode_code(funcs[fid], language="java").strand for fid in needed}
-    s_scored = [(compare_strands(strands[a], strands[b], code_aware=True).score, lbl)
+    # For clone detection, use top-K codon Jaccard rather than greedy
+    # alignment. Same-language code shares all the structural codons, which
+    # over-rates non-clones in the alignment scorer.
+    s_scored = [(clone_similarity(strands[a], strands[b]), lbl)
                 for a, b, lbl in pairs]
 
     vecs = {fid: svec(g300, funcs[fid]) for fid in needed}

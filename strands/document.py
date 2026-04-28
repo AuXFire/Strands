@@ -99,3 +99,17 @@ def fingerprint_similarity(
     h = histogram_cosine(a.domain_histogram, b.domain_histogram)
     j = topcodon_jaccard(a.top_codons, b.top_codons)
     return histogram_weight * h + (1.0 - histogram_weight) * j
+
+
+def clone_similarity(strand_a, strand_b, *, top_k: int = 16) -> float:
+    """Code-clone-tuned similarity: Jaccard over top-K codons.
+
+    The greedy alignment comparator over-rates structural similarity in
+    same-language code (Java functions all share Java keywords). Top-K
+    Jaccard focuses on the per-document distinctive codons — which are
+    typically the identifier-derived ones — and discriminates clones from
+    non-clones much more cleanly.
+    """
+    fp_a = DocumentFingerprint.from_strand(strand_a, top_k=top_k)
+    fp_b = DocumentFingerprint.from_strand(strand_b, top_k=top_k)
+    return topcodon_jaccard(fp_a.top_codons, fp_b.top_codons)

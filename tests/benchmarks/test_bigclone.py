@@ -84,11 +84,13 @@ def test_bigclone_f1():
         except Exception:
             pass
 
+    from strands.document import clone_similarity
+
     scored: list[tuple[float, int]] = []
     for a, b, lbl in pairs:
         if a not in strands or b not in strands:
             continue
-        s = compare_strands(strands[a], strands[b], code_aware=True).score
+        s = clone_similarity(strands[a], strands[b])
         scored.append((s, lbl))
 
     # Sweep thresholds, pick max-F1
