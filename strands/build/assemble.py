@@ -1,7 +1,10 @@
 """Assemble the final codebook JSON.
 
 Pipeline:
-  seeds → wordnet expansion → frequency filter → sentiwordnet polarity → JSON
+  seeds → wordnet expansion (full vocab) → sentiwordnet polarity → JSON
+
+Frequency information is recorded as a formality hint per entry but is no
+longer used to drop entries — every classified WordNet lemma is included.
 """
 
 from __future__ import annotations
@@ -14,33 +17,44 @@ from strands.build.frequency_filter import (
     formality_from_frequency,
     is_common,
 )
+from strands.build.morphology import variants_for, wordnet_irregular_forms
 from strands.build.seeds import ALL_SEEDS
 from strands.build.sentiwordnet import polarity_bits
-from strands.build.wordnet_builder import expand_seeds
+from strands.build.wordnet_builder import expand_seeds_with_pos
 from strands.codon import DOMAIN_NAMES
 
 CODEBOOK_VERSION = "0.1.0"
 
 
 def _intensity_for(word: str) -> int:
-    # Heuristic: longer words tend to be less intense in everyday speech.
-    # Default to 1 (normal). Specific overrides can be added later.
     return 1
 
 
-def _abstraction_for(word: str) -> int:
-    return min(3, len(word) // 4)
+def build(
+    *,
+    frequency_threshold: float | None = None,
+    include_inflections: bool = True,
+) -> dict:
+    """Build the codebook dict.
 
+    `frequency_threshold` is optional. When None, every classified WordNet
+    lemma is included (full vocabulary). When set, non-seed entries with
+    Zipf frequency below the threshold are dropped — useful for producing
+    smaller diagnostic codebooks.
 
-def build(*, frequency_threshold: float = 2.0) -> dict:
-    seed_map = expand_seeds(ALL_SEEDS, hyponym_depth=1)
+    `include_inflections` adds rule-based inflectional variants (plurals,
+    -ed/-ing, comparatives) plus WordNet's irregular-form exception lists.
+    """
+    seed_map, word_to_pos = expand_seeds_with_pos(ALL_SEEDS)
+    seed_words: set[str] = {w.lower() for words in ALL_SEEDS.values() for w in words}
 
     entries: dict[str, dict] = {}
     for word, (domain_code, category, concept) in sorted(seed_map.items()):
-        # Always include direct seed words (even if rare); filter only
-        # the WordNet-expanded long tail by frequency.
-        is_seed = word in {w for words in ALL_SEEDS.values() for w in words}
-        if not is_seed and not is_common(word, frequency_threshold):
+        if (
+            frequency_threshold is not None
+            and word not in seed_words
+            and not is_common(word, frequency_threshold)
+        ):
             continue
 
         polarity = polarity_bits(word)
@@ -58,15 +72,53 @@ def build(*, frequency_threshold: float = 2.0) -> dict:
             },
         }
 
+    if include_inflections:
+        # Inflectional variants overwrite any conflicting WordNet entries so
+        # that, e.g., "running" inherits from the verb "run" rather than
+        # WordNet's noun sense ("the running of a business").
+        # Seeds are protected — they always win.
+        # Snapshot the WordNet+seed bases up front so we don't iterate over
+        # the inflections we just generated (which would create "happiers").
+        wordnet_bases = list(entries.keys())
+        for word in sorted(wordnet_bases, key=lambda w: (len(w), w)):
+            base_entry = entries[word]
+            for pos in word_to_pos.get(word, []):
+                for variant in variants_for(word, pos):
+                    if variant in seed_words:
+                        continue
+                    entries[variant] = {
+                        "d": base_entry["d"],
+                        "c": base_entry["c"],
+                        "n": base_entry["n"],
+                        "s": dict(base_entry["s"]),
+                    }
+
+        # WordNet's irregular-form exception lists (e.g. went -> go).
+        for inflected, lemmas in wordnet_irregular_forms().items():
+            if inflected in seed_words:
+                continue
+            for lemma in lemmas:
+                base = entries.get(lemma)
+                if base is not None:
+                    entries[inflected] = {
+                        "d": base["d"],
+                        "c": base["c"],
+                        "n": base["n"],
+                        "s": dict(base["s"]),
+                    }
+                    break
+
     domains_meta = {}
     for code, name in DOMAIN_NAMES.items():
         cats = {(c, n) for (d, c, n) in ALL_SEEDS.keys() if d == code}
         if cats:
+            entry_count = sum(1 for v in entries.values() if v["d"] == code)
             domains_meta[code] = {
                 "name": name,
                 "type": "text",
                 "categories": len({c for c, _ in cats}),
                 "concepts": len(cats),
+                "entries": entry_count,
             }
 
     return {
@@ -84,7 +136,7 @@ def build(*, frequency_threshold: float = 2.0) -> dict:
     }
 
 
-def write(output_path: Path | str, *, frequency_threshold: float = 2.0) -> dict:
+def write(output_path: Path | str, *, frequency_threshold: float | None = None) -> dict:
     codebook = build(frequency_threshold=frequency_threshold)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

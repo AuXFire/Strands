@@ -7,12 +7,13 @@ def test_encode_basic():
     assert result.byte_size == 8 + 4 * len(result.strand.codons)
 
 
-def test_encode_lemmatizes_inflected():
-    r = encode("dogs running")
-    words = [c.word for c in r.strand.codons]
-    # lemmatized forms should appear, not raw inflections
-    assert "dog" in words
-    assert "run" in words or any(c.word == "run" for c in r.strand.codons)
+def test_encode_handles_inflected_forms():
+    """Inflected forms encode to the same codon as their base lemma."""
+    inflected = encode("dogs running")
+    base = encode("dog run")
+    assert len(inflected.strand.codons) == len(base.strand.codons)
+    for a, b in zip(inflected.strand.codons, base.strand.codons):
+        assert a.codon == b.codon
 
 
 def test_encode_records_unknowns():
