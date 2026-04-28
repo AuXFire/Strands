@@ -107,11 +107,14 @@ def _pair_score(
     wordnet_bridge: bool = True,
     conceptnet_bridge: bool = False,
     code_aware: bool = False,
+    codebook=None,
 ) -> float:
-    """C1 multi-sense + C2 WordNet bridge + C3 shade + C6 ConceptNet bridge.
+    """C1 multi-sense + C2 WordNet bridge + C3 shade + codon adjacency.
 
     When ``code_aware`` is True, applies spec §8.3 rule 1 (structural codons
-    get 1.5x weight)."""
+    get 1.5x weight). When a codebook with codon adjacency is supplied,
+    cross-domain related pairs draw their score from the built-in graph
+    instead of the runtime ConceptNet model."""
     a_codons = (a.codon,) + a.alt_codons
     b_codons = (b.codon,) + b.alt_codons
 
@@ -124,27 +127,36 @@ def _pair_score(
 
     codon_best = best
 
-    # Tier 3 — ConceptNet/Numberbatch is the most reliable continuous
-    # relatedness signal available. When both words are in vocabulary,
-    # CN drives the ranking. Strand only contributes a synonym lift for
-    # pairs where strand identifies a perfect concept match.
-    cn = None
+    # Tier 3 — Optional runtime ConceptNet/Numberbatch. When enabled,
+    # delivers the strongest signal and replaces the codon-only score.
+    # Off by default; the built-in adjacency handles the same role with
+    # no runtime dependency.
     if conceptnet_bridge and a.word and b.word:
         cn = conceptnet_word_similarity(a.word, b.word)
+        if cn is not None and cn > 0:
+            return cn
 
-    if cn is not None and cn > 0:
-        # Pure CN ranking. Empirically this gives the strongest correlation
-        # across both similarity (SimLex/SimVerb) and relatedness
-        # (WordSim/MEN/RG-65) benchmarks. Codon-level signals in this
-        # range hurt more than they help (false positives from same-concept
-        # collisions like loop/belt, monk/slave).
-        return cn
+    # Tier 1.5 — Built-in codon adjacency. Strand-native graph derived
+    # from ConceptNet at build time, ships in the codebook JSON. Used
+    # when runtime CN is unavailable (default) and codon match is below
+    # concept level. Provides the relatedness signal cross-domain pairs
+    # need without any 1.2GB model download.
+    if codon_best < 0.75 and codebook is not None and getattr(codebook, "_adjacency", None):
+        adj_best = 0.0
+        for ca in a_codons:
+            ca_str = ca.to_str()
+            for cb in b_codons:
+                if ca == cb:
+                    continue
+                cb_str = cb.to_str()
+                w = codebook.codon_relatedness(ca_str, cb_str)
+                if w is not None and w > adj_best:
+                    adj_best = w
+        if adj_best > 0:
+            best = max(best, adj_best)
 
-    # Tier 2 — WordNet bridge (only relevant when ConceptNet is unavailable
-    # or one of the words is OOV in Numberbatch). A threshold of 0.30
-    # filters out the ~0.2 noise floor where any two physical_entity nouns
-    # share entity.n.01 as a remote ancestor (soldier/fruit, etc.).
-    if wordnet_bridge:
+    # Tier 2 — WordNet bridge (final fallback for OOV pairs).
+    if best < 0.40 and wordnet_bridge:
         sim = None
         if a.synset and b.synset:
             sim = wordnet_similarity(a.synset, b.synset)
@@ -171,16 +183,23 @@ def compare_strands(
     sentence_mode: bool | None = None,
     code_aware: bool = False,
     pattern_bonus: float = 0.0,
+    codebook=None,
 ) -> ComparisonResult:
     """Align two strands and produce a similarity score.
 
-    When ``sentence_mode`` is True (or auto-detected from strand length),
-    ConceptNet mean-vector cosine is used as the primary score. This
-    matches the GloVe/Word2Vec sentence-similarity baseline but uses the
-    higher-quality ConceptNet Numberbatch vectors.
+    The default codebook ships a built-in codon→codon adjacency table
+    (derived from ConceptNet at build time) which provides cross-domain
+    relatedness without any runtime model dependency. ``conceptnet_bridge``
+    is now an optional fallback for OOV codons.
     """
     if conceptnet_bridge is None:
         conceptnet_bridge = _CONCEPTNET_DEFAULT
+    if codebook is None:
+        from strands.codebook import default_codebook
+        try:
+            codebook = default_codebook()
+        except Exception:
+            codebook = None
 
     if sentence_mode is None:
         sentence_mode = (
@@ -223,6 +242,7 @@ def compare_strands(
                 wordnet_bridge=wordnet_bridge,
                 conceptnet_bridge=conceptnet_bridge,
                 code_aware=code_aware,
+                codebook=codebook,
             )
             # Spec §8.3 rule 3: position-proximity bonus up to 0.05.
             if code_aware and s > 0:

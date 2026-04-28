@@ -26,6 +26,33 @@ class Codebook:
         self.domains: dict = data.get("domains", {})
         self._entries: dict[str, dict] = data.get("entries", {})
         self._code_entries: dict[str, dict] = data.get("code_entries", {})
+        # Codon→codon adjacency for cross-domain relatedness (§6.1).
+        # Replaces runtime ConceptNet/Numberbatch lookup with a compact
+        # built-in graph: {codon_str: [(neighbor_codon_str, weight_u8), ...]}
+        raw_adj: dict = data.get("codon_adjacency", {})
+        self._adjacency: dict[str, dict[str, int]] = {
+            codon: {nb: w for nb, w in edges} for codon, edges in raw_adj.items()
+        }
+
+    @property
+    def adjacency_size(self) -> int:
+        return sum(len(v) for v in self._adjacency.values())
+
+    def codon_relatedness(self, codon_a_str: str, codon_b_str: str) -> float | None:
+        """Return relatedness in [0.0, 1.0] for two codon strings, or None
+        if the pair has no edge in the adjacency table. Symmetric: tries
+        both directions."""
+        edges_a = self._adjacency.get(codon_a_str)
+        if edges_a is not None:
+            w = edges_a.get(codon_b_str)
+            if w is not None:
+                return w / 255.0
+        edges_b = self._adjacency.get(codon_b_str)
+        if edges_b is not None:
+            w = edges_b.get(codon_a_str)
+            if w is not None:
+                return w / 255.0
+        return None
 
     def __len__(self) -> int:
         return len(self._entries)
