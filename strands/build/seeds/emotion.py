@@ -1,7 +1,5 @@
-"""Emotion (EM) — basic, attachment, surprise, confidence, energy, social, complex.
-
-Each entry: (category, concept, seed_words).
-"""
+"""Emotion (EM) — basic, attachment, surprise, confidence, energy, social,
+complex, moral, aesthetic."""
 
 SEEDS: list[tuple[int, int, list[str]]] = [
     # Category 0: basic emotions
@@ -13,6 +11,8 @@ SEEDS: list[tuple[int, int, list[str]]] = [
     (0, 0x05, ["disgusted", "repulsed", "revolted"]),
     (0, 0x06, ["jealous", "envious"]),
     (0, 0x07, ["guilty", "ashamed", "remorseful"]),
+    (0, 0x08, ["bliss", "ecstasy", "euphoric"]),
+    (0, 0x09, ["grief", "anguish", "heartbroken"]),
     # Category 1: attachment
     (1, 0x00, ["love", "adore", "cherish"]),
     (1, 0x01, ["hate", "detest", "despise", "loathe"]),
@@ -20,22 +20,33 @@ SEEDS: list[tuple[int, int, list[str]]] = [
     (1, 0x03, ["dislike", "averse"]),
     (1, 0x04, ["affection", "warmth", "tenderness"]),
     (1, 0x05, ["devotion", "loyalty", "fidelity"]),
+    (1, 0x06, ["passion", "ardor"]),
+    (1, 0x07, ["crush", "infatuation"]),
+    (1, 0x08, ["longing", "yearning", "pine"]),
     # Category 2: surprise
     (2, 0x00, ["surprise", "astonish", "amaze", "astound"]),
     (2, 0x01, ["shock", "stun", "stagger"]),
     (2, 0x02, ["wonder", "marvel", "awe"]),
+    (2, 0x03, ["curious", "curiosity"]),
+    (2, 0x04, ["puzzled", "perplexed"]),
     # Category 3: confidence
     (3, 0x00, ["confident", "assured", "certain"]),
     (3, 0x01, ["doubt", "uncertain", "unsure"]),
     (3, 0x02, ["proud", "prideful"]),
     (3, 0x03, ["humble", "modest"]),
     (3, 0x04, ["embarrassed", "humiliated"]),
+    (3, 0x05, ["arrogant", "haughty"]),
+    (3, 0x06, ["insecure", "self_doubt"]),
+    (3, 0x07, ["determined", "resolute"]),
     # Category 4: energy
     (4, 0x00, ["excited", "thrilled", "enthusiastic", "elated"]),
     (4, 0x01, ["bored", "tedious", "dull"]),
     (4, 0x02, ["tired", "exhausted", "weary", "fatigued"]),
     (4, 0x03, ["energetic", "vigorous", "lively"]),
     (4, 0x04, ["relaxed", "rested"]),
+    (4, 0x05, ["restless"]),
+    (4, 0x06, ["alert", "attentive"]),
+    (4, 0x07, ["sleepy", "drowsy"]),
     # Category 5: social emotions
     (5, 0x00, ["lonely", "isolated", "solitary"]),
     (5, 0x01, ["friendly", "amiable", "cordial"]),
@@ -43,6 +54,10 @@ SEEDS: list[tuple[int, int, list[str]]] = [
     (5, 0x03, ["compassion", "sympathy", "empathy"]),
     (5, 0x04, ["kindness", "kind", "benevolent"]),
     (5, 0x05, ["cruel", "mean", "malicious"]),
+    (5, 0x06, ["trust", "trusting"]),
+    (5, 0x07, ["distrust", "suspicious"]),
+    (5, 0x08, ["welcoming", "hospitable"]),
+    (5, 0x09, ["awkward", "uncomfortable"]),
     # Category 6: complex
     (6, 0x00, ["nostalgia", "nostalgic"]),
     (6, 0x01, ["melancholy", "wistful"]),
@@ -51,4 +66,22 @@ SEEDS: list[tuple[int, int, list[str]]] = [
     (6, 0x04, ["despair", "hopeless", "despondent"]),
     (6, 0x05, ["content", "satisfied", "fulfilled"]),
     (6, 0x06, ["frustrated", "annoyed", "irritated"]),
+    (6, 0x07, ["regret", "remorse"]),
+    (6, 0x08, ["relief", "relieved"]),
+    (6, 0x09, ["disappointed", "letdown"]),
+    (6, 0x0A, ["pity", "sorry"]),
+    # Category 7: moral / ethical
+    (7, 0x00, ["pride", "honor"]),
+    (7, 0x01, ["shame", "disgrace"]),
+    (7, 0x02, ["dignity"]),
+    (7, 0x03, ["respect"]),
+    (7, 0x04, ["contempt", "scorn"]),
+    (7, 0x05, ["forgiveness", "forgive"]),
+    (7, 0x06, ["resentment", "grudge"]),
+    # Category 8: aesthetic / appreciation
+    (8, 0x00, ["delight", "pleasure"]),
+    (8, 0x01, ["disgust_aesthetic"]),
+    (8, 0x02, ["admiration"]),
+    (8, 0x03, ["enchanted", "captivated"]),
+    (8, 0x04, ["bored_aesthetic"]),
 ]
