@@ -18,7 +18,7 @@ from strands.build.frequency_filter import (
     is_common,
 )
 from strands.build.morphology import variants_for, wordnet_irregular_forms
-from strands.build.seeds import ALL_SEEDS
+from strands.build.seeds import ALL_CODE_SEEDS, ALL_SEEDS
 from strands.build.sentiwordnet import polarity_bits
 from strands.build.wordnet_builder import expand_seeds_with_pos
 from strands.codon import DOMAIN_NAMES
@@ -121,11 +121,14 @@ def build(
                 "entries": entry_count,
             }
 
+    code_entries = build_code_entries()
+
     return {
         "version": CODEBOOK_VERSION,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "stats": {
             "total_entries": len(entries),
+            "code_entries": len(code_entries),
             "domains": len(domains_meta),
             "categories": sum(d["categories"] for d in domains_meta.values()),
             "concepts": sum(d["concepts"] for d in domains_meta.values()),
@@ -133,7 +136,25 @@ def build(
         },
         "domains": domains_meta,
         "entries": entries,
+        "code_entries": code_entries,
     }
+
+
+def build_code_entries() -> dict[str, dict]:
+    """Code-domain entries — direct from seeds, no WordNet expansion."""
+    out: dict[str, dict] = {}
+    for (domain_code, category, concept), words in ALL_CODE_SEEDS.items():
+        for word in words:
+            w = word.lower().strip()
+            if not w or w in out:
+                continue
+            out[w] = {
+                "d": domain_code,
+                "c": category,
+                "n": concept,
+                "s": {"p": 1, "f": 2, "i": 1},  # neutral, slightly formal
+            }
+    return out
 
 
 def write(output_path: Path | str, *, frequency_threshold: float | None = None) -> dict:

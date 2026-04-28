@@ -99,3 +99,13 @@ def _collect() -> dict[tuple[str, int, int], list[str]]:
 
 
 ALL_SEEDS: dict[tuple[str, int, int], list[str]] = _collect()
+
+
+def all_code_seeds() -> dict[tuple[str, int, int], list[str]]:
+    """Code-domain seeds (Phase 2). Lazy import to keep text-only callers cheap."""
+    from strands.build.seeds.code import collect_code_seeds
+
+    return collect_code_seeds()
+
+
+ALL_CODE_SEEDS: dict[tuple[str, int, int], list[str]] = all_code_seeds()

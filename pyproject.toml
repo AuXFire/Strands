@@ -22,6 +22,11 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.0",
 ]
+ast = [
+    "tree-sitter>=0.20",
+    "tree-sitter-python>=0.20",
+    "tree-sitter-javascript>=0.20",
+]
 
 [project.scripts]
 strand = "strands.cli:main"

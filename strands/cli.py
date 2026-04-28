@@ -9,6 +9,7 @@ from pathlib import Path
 import click
 
 from strands import __version__
+from strands.code_encoder import detect_language, encode_code
 from strands.codebook import Codebook, default_codebook
 from strands.comparator import compare_strands
 from strands.encoder import encode
@@ -30,32 +31,65 @@ def main() -> None:
     default="text",
     help="Output format.",
 )
-def encode_cmd(text: str, fmt: str) -> None:
+@click.option(
+    "--mode",
+    type=click.Choice(["text", "code", "auto"]),
+    default="text",
+    help="Encoder mode. 'code' uses the AST/keyword-aware encoder.",
+)
+@click.option(
+    "--language",
+    type=click.Choice(sorted(["python", "javascript", "typescript", "rust",
+                              "go", "java", "c", "cpp"])),
+    default=None,
+    help="Source language for --mode=code (default: python).",
+)
+@click.option(
+    "--from-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read TEXT from a file instead of the argument.",
+)
+def encode_cmd(text: str, fmt: str, mode: str, language: str | None, from_file: str | None) -> None:
     """Encode TEXT into a semantic strand."""
-    result = encode(text)
+    if from_file:
+        with open(from_file, "r", encoding="utf-8") as f:
+            text = f.read()
+        if mode == "auto":
+            lang = detect_language(from_file)
+            mode = "code" if lang else "text"
+            language = language or lang
+
+    if mode == "code":
+        lang = language or "python"
+        result = encode_code(text, language=lang)
+    else:
+        result = encode(text)
+
     if fmt == "text":
         click.echo(result.strand_text)
     elif fmt == "binary":
         sys.stdout.buffer.write(result.strand.to_binary())
     else:  # json
-        click.echo(
-            json.dumps(
+        payload: dict = {
+            "strand": result.strand_text,
+            "byte_size": result.byte_size,
+            "codons": [
                 {
-                    "strand": result.strand_text,
-                    "byte_size": result.byte_size,
-                    "codons": [
-                        {
-                            "word": e.word,
-                            "codon": e.codon.to_str(),
-                            "shade": f"{e.shade:02X}",
-                        }
-                        for e in result.strand.codons
-                    ],
-                    "unknowns": result.unknowns,
-                },
-                indent=2,
-            )
-        )
+                    "word": e.word,
+                    "codon": e.codon.to_str(),
+                    "shade": f"{e.shade:02X}",
+                }
+                for e in result.strand.codons
+            ],
+            "unknowns": result.unknowns,
+        }
+        if mode == "code":
+            payload["language"] = result.language
+            payload["structural_count"] = result.structural_count
+            payload["semantic_count"] = result.semantic_count
+            payload["structural_density"] = round(result.structural_density, 3)
+        click.echo(json.dumps(payload, indent=2))
 
 
 @main.command("compare")
