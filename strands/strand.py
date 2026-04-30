@@ -35,14 +35,21 @@ from dataclasses import dataclass, field
 V2_RELATED_SLOTS = 4
 
 from strands.codon import NULL_CODON, Codon
+from strands.relations import (
+    TypedRelation,
+    parse_relation_direction,
+    parse_relation_type,
+)
 from strands.shade import Shade
 
 MAGIC = b"SS"
 VERSION_V1 = 0x01
 VERSION_V2 = 0x02
+VERSION_V3 = 0x03
 FLAG_HAS_METADATA = 0x01
 FLAG_CODE_MODE = 0x02
 FLAG_V2_RELATIONS = 0x04  # 12-byte body entries with two related codons
+FLAG_V3_TYPED_RELATIONS = 0x08
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +60,10 @@ class CodonEntry:
     # Up to two ConceptNet-derived related codons with their uint8 weights.
     # Stamped in by the encoder from the codebook entry. Used by the
     # comparator for in-strand cross-codon relatedness scoring.
-    related: tuple[tuple[Codon, int], ...] = ()
+    related: tuple[TypedRelation, ...] = ()
+    role: int = 0
+    features: int = 0
+    sense: int = 0
     # Optional metadata for round-trip diagnostics; not in binary format.
     synset: str = ""
 
@@ -65,12 +75,14 @@ class CodonEntry:
 @dataclass(slots=True)
 class Strand:
     codons: list[CodonEntry] = field(default_factory=list)
-    version: int = VERSION_V2  # default to v2 going forward
+    version: int = VERSION_V3  # v3 carries typed, directional relation slots
 
     @property
     def byte_size(self) -> int:
         """Binary byte size for the strand's current version."""
-        if self.version == VERSION_V2:
+        if self.version == VERSION_V3:
+            per_token = 8 + 6 * V2_RELATED_SLOTS
+        elif self.version == VERSION_V2:
             per_token = 4 + 4 * V2_RELATED_SLOTS
         else:
             per_token = 4
@@ -113,12 +125,41 @@ class Strand:
             flags |= FLAG_HAS_METADATA
         if code_mode:
             flags |= FLAG_CODE_MODE
-        if v == VERSION_V2:
+        if v == VERSION_V3:
+            flags |= FLAG_V3_TYPED_RELATIONS
+        elif v == VERSION_V2:
             flags |= FLAG_V2_RELATIONS
 
         header = MAGIC + struct.pack(">BBHxx", v, flags, len(self.codons))
 
-        if v == VERSION_V2:
+        if v == VERSION_V3:
+            body = bytearray()
+            for e in self.codons:
+                body.extend(struct.pack(
+                    ">BBBBBBH",
+                    e.codon.domain & 0xFF,
+                    e.codon.category & 0xFF,
+                    e.codon.concept & 0xFF,
+                    e.shade & 0xFF,
+                    e.role & 0xFF,
+                    e.sense & 0xFF,
+                    e.features & 0xFFFF,
+                ))
+                rels = list(e.related[:V2_RELATED_SLOTS])
+                while len(rels) < V2_RELATED_SLOTS:
+                    rels.append(TypedRelation(NULL_CODON, 0))
+                for rel in rels:
+                    body.extend(struct.pack(
+                        ">BBBBBB",
+                        int(parse_relation_type(rel.relation)) & 0xFF,
+                        int(parse_relation_direction(rel.direction)) & 0xFF,
+                        rel.codon.domain & 0xFF,
+                        rel.codon.category & 0xFF,
+                        rel.codon.concept & 0xFF,
+                        rel.clamped_weight() & 0xFF,
+                    ))
+            body_bytes = bytes(body)
+        elif v == VERSION_V2:
             body = bytearray()
             for e in self.codons:
                 body.extend(struct.pack(
@@ -131,14 +172,14 @@ class Strand:
                 # Pad related to V2_RELATED_SLOTS with NULL_CODON.
                 rels = list(e.related[:V2_RELATED_SLOTS])
                 while len(rels) < V2_RELATED_SLOTS:
-                    rels.append((NULL_CODON, 0))
-                for rel_codon, rel_w in rels:
+                    rels.append(TypedRelation(NULL_CODON, 0))
+                for rel in rels:
                     body.extend(struct.pack(
                         "BBBB",
-                        rel_codon.domain & 0xFF,
-                        rel_codon.category & 0xFF,
-                        rel_codon.concept & 0xFF,
-                        rel_w & 0xFF,
+                        rel.codon.domain & 0xFF,
+                        rel.codon.category & 0xFF,
+                        rel.codon.concept & 0xFF,
+                        rel.clamped_weight() & 0xFF,
                     ))
             body_bytes = bytes(body)
         else:
@@ -163,14 +204,42 @@ class Strand:
         if data[:2] != MAGIC:
             raise ValueError("Invalid strand binary: bad magic")
         version, flags, count = struct.unpack(">BBH", data[2:6])
-        if version not in (VERSION_V1, VERSION_V2):
+        if version not in (VERSION_V1, VERSION_V2, VERSION_V3):
             raise ValueError(f"Unsupported strand version: {version}")
 
+        is_v3 = bool(flags & FLAG_V3_TYPED_RELATIONS) or version == VERSION_V3
         is_v2 = bool(flags & FLAG_V2_RELATIONS) or version == VERSION_V2
         entries = []
         offset = 8
 
-        if is_v2:
+        if is_v3:
+            for _ in range(count):
+                d, c, n, s, role, sense, features = struct.unpack(
+                    ">BBBBBBH", data[offset : offset + 8]
+                )
+                offset += 8
+                rels = []
+                for _ in range(V2_RELATED_SLOTS):
+                    rt, rd, cd, cc, cn, rw = struct.unpack(
+                        ">BBBBBB", data[offset : offset + 6]
+                    )
+                    offset += 6
+                    rel_codon = Codon(cd, cc, cn)
+                    if not rel_codon.is_null:
+                        rels.append(TypedRelation(
+                            codon=rel_codon,
+                            weight=rw,
+                            relation=parse_relation_type(rt),
+                            direction=parse_relation_direction(rd),
+                        ))
+                entries.append(CodonEntry(
+                    codon=Codon(d, c, n), shade=s,
+                    related=tuple(rels),
+                    role=role,
+                    features=features,
+                    sense=sense,
+                ))
+        elif is_v2:
             for _ in range(count):
                 d, c, n, s = struct.unpack(
                     "BBBB", data[offset : offset + 4]
@@ -184,7 +253,7 @@ class Strand:
                     offset += 4
                     rel_codon = Codon(rd, rc, rn)
                     if not rel_codon.is_null:
-                        rels.append((rel_codon, rw))
+                        rels.append(TypedRelation(rel_codon, rw))
                 entries.append(CodonEntry(
                     codon=Codon(d, c, n), shade=s,
                     related=tuple(rels),
@@ -195,7 +264,13 @@ class Strand:
                 entries.append(CodonEntry(codon=Codon(d, c, n), shade=s))
                 offset += 4
 
-        return cls(codons=entries, version=VERSION_V2 if is_v2 else VERSION_V1)
+        if is_v3:
+            out_version = VERSION_V3
+        elif is_v2:
+            out_version = VERSION_V2
+        else:
+            out_version = VERSION_V1
+        return cls(codons=entries, version=out_version)
 
     @property
     def domains(self) -> set[int]:

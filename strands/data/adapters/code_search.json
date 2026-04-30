@@ -1,0 +1,18 @@
+{
+  "name": "code_search",
+  "profile": {
+    "antonym_penalty": 0.08,
+    "query_coverage": true,
+    "lexical_weight": 0.52,
+    "relation_hierarchy_weight": 0.0,
+    "relation_scale": {
+      "RELATED": 0.78,
+      "SYN": 0.90,
+      "USED_FOR": 0.82,
+      "ROLE": 0.84,
+      "CTX": 0.62,
+      "ASSOC": 0.30,
+      "TOPIC": 0.28
+    }
+  }
+}

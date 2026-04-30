@@ -20,8 +20,9 @@ from strands.codebook import Codebook, default_codebook
 from strands.encoder import encode as encode_text
 from strands.identifier import split_identifier
 from strands.lemmatizer import lemmatize
+from strands.phrases import add_frame_entries
 from strands.shade import compute_shade
-from strands.strand import CodonEntry, Strand
+from strands.strand import VERSION_V3, CodonEntry, Strand
 
 # Per-language reserved-keyword sets. These are looked up code-mode in the
 # codebook; identifiers that aren't keywords go through identifier splitting.
@@ -217,6 +218,7 @@ def encode_code(
                         shade=compute_shade(token.lower(), cb_entry.shade_hint),
                         word=token.lower(),
                         related=cb_entry.related,
+                        role=2,
                         synset=cb_entry.synset,
                     )
                 )
@@ -241,6 +243,7 @@ def encode_code(
                             shade=compute_shade(word, cb_entry.shade_hint),
                             word=word,
                             related=cb_entry.related,
+                            role=1,
                             synset=cb_entry.synset,
                         )
                     )
@@ -248,9 +251,8 @@ def encode_code(
 
     from strands.code_patterns import detect_patterns
 
-    from strands.strand import VERSION_V2
     return CodeEncodeResult(
-        strand=Strand(codons=entries, version=VERSION_V2),
+        strand=Strand(codons=add_frame_entries(entries), version=VERSION_V3),
         text=source,
         language=language,
         unknowns=unknowns,

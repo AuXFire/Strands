@@ -1,0 +1,16 @@
+{
+  "name": "strict",
+  "profile": {
+    "antonym_penalty": 0.22,
+    "relation_hierarchy_weight": 0.0,
+    "relation_scale": {
+      "RELATED": 0.65,
+      "SYN": 0.96,
+      "ISA": 0.85,
+      "CTX": 0.90,
+      "PART": 0.50,
+      "ASSOC": 0.25,
+      "TOPIC": 0.18
+    }
+  }
+}

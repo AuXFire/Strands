@@ -1,0 +1,70 @@
+{
+  "name": "phrase_frames",
+  "frames": [
+    {
+      "name": "open_file",
+      "codon": "TC320",
+      "groups": [["open", "read", "load"], ["file", "filepath", "filename", "path"]]
+    },
+    {
+      "name": "read_file",
+      "codon": "TC321",
+      "groups": [["read", "get", "load"], ["file", "source", "text", "string"]]
+    },
+    {
+      "name": "count_rows",
+      "codon": "TC322",
+      "groups": [["count", "number", "len", "length"], ["row", "rows"]]
+    },
+    {
+      "name": "excel_sheet",
+      "codon": "TC323",
+      "groups": [["excel", "worksheet", "sheet"], ["row", "rows", "cell", "column", "table"]]
+    },
+    {
+      "name": "remove_characters",
+      "codon": "AC520",
+      "groups": [["remove", "delete", "strip", "clean"], ["character", "characters", "letter", "letters", "char", "chars"]]
+    },
+    {
+      "name": "filter_numeric",
+      "codon": "AC521",
+      "groups": [["numeric", "number", "digit", "digits"], ["character", "characters", "string", "text"]]
+    },
+    {
+      "name": "push_notification",
+      "codon": "CM320",
+      "groups": [["push", "send", "receive", "recieve", "notify", "notification", "notifications"], ["notification", "notifications", "notify", "listener", "listeners"]]
+    },
+    {
+      "name": "latest_commit",
+      "codon": "TC324",
+      "groups": [["latest", "last", "head"], ["commit", "git", "repo", "repository"]]
+    },
+    {
+      "name": "binary_search",
+      "codon": "TC325",
+      "groups": [["binary"], ["search", "find", "lookup"]]
+    },
+    {
+      "name": "merge_sort",
+      "codon": "TC326",
+      "groups": [["merge"], ["sort", "sorted", "sorting"]]
+    },
+    {
+      "name": "parse_json",
+      "codon": "TC327",
+      "groups": [["parse", "load", "read"], ["json"]]
+    },
+    {
+      "name": "fetch_url",
+      "codon": "TC328",
+      "groups": [["fetch", "request", "open", "send", "get"], ["url", "http", "web", "response"]]
+    },
+    {
+      "name": "tree_insert",
+      "codon": "TC329",
+      "groups": [["insert", "add"], ["tree", "node", "bst", "binary"]]
+    }
+  ]
+}

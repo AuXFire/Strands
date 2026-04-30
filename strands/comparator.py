@@ -1,41 +1,46 @@
-"""Strand alignment / comparison — pure in-strand byte math.
-
-Two strands compared on a Raspberry Pi with no codebook, no runtime
-model, no sidecar files produce a meaningful similarity score from
-their bytes alone. The comparator does codon-hierarchy arithmetic plus
-in-strand cross-codon relatedness using the two related-codon slots
-each token carries (stamped at encode time from ConceptNet 5.7).
-
-Scoring tiers:
-  Tier 1 — Codon hierarchy (spec §8.1):
-    same domain                       0.25
-    + same category                   0.15
-    + same concept                    0.35
-    + shade similarity (concept)      0.25 × shade_sim
-    + shade similarity (partial)      0.05 × shade_sim
-  Tier 2 — In-strand related-codon match:
-    a's primary == b.related[i]       weight × 0.85 / 255
-    a.related[i] == b's primary       weight × 0.85 / 255
-    a.related[i] == b.related[j]      min(weights) × 0.55 / 255
-
-  The final per-pair score is max(Tier 1, Tier 2). Tier 1 wins on
-  synonyms; Tier 2 fills cross-domain relatedness without external
-  data.
-"""
+"""Strand alignment / comparison using only data carried by strands."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from strands.adapters import BASE_RELATION_SCALE, ScoringProfile, get_scoring_profile
 from strands.codon import Codon
+from strands.relations import RelationType
 from strands.shade import shade_similarity
 from strands.strand import CodonEntry, Strand
 
 
-# Code-domain IDs for spec §8.3 rule 1 (structural codons get 1.5×).
 _CODE_DOMAIN_IDS: frozenset[int] = frozenset({
     0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A,
 })
+
+def _is_code_heavy(strand: Strand) -> bool:
+    if not strand.codons:
+        return False
+    code_count = sum(1 for e in strand.codons if e.codon.domain in _CODE_DOMAIN_IDS)
+    return code_count / len(strand.codons) >= 0.20
+
+
+def _select_profile(
+    strand_a: Strand,
+    strand_b: Strand,
+    profile: str,
+    *,
+    conceptnet_bridge: bool,
+    code_aware: bool,
+) -> ScoringProfile:
+    if profile == "default":
+        return ScoringProfile(relation_scale=BASE_RELATION_SCALE)
+    if profile in {"strict", "topical", "sentence", "code_search"}:
+        return get_scoring_profile(profile)
+    if not conceptnet_bridge:
+        return ScoringProfile(relation_scale=BASE_RELATION_SCALE)
+    if code_aware or _is_code_heavy(strand_b) or len(strand_b.codons) >= max(12, len(strand_a.codons) * 3):
+        return get_scoring_profile("code_search")
+    if len(strand_a.codons) == 1 and len(strand_b.codons) == 1:
+        return get_scoring_profile("topical")
+    return get_scoring_profile("sentence")
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +62,7 @@ class ComparisonResult:
         for m in self.matches:
             lines.append(
                 f"  {m.a.word or m.a.codon.to_str()} ({m.a.codon.to_str()}:{m.a.shade:02X})"
-                f" ↔ {m.b.word or m.b.codon.to_str()} ({m.b.codon.to_str()}:{m.b.shade:02X})"
+                f" <-> {m.b.word or m.b.codon.to_str()} ({m.b.codon.to_str()}:{m.b.shade:02X})"
                 f"  score={m.score:.3f}"
             )
         if self.unmatched_a:
@@ -77,7 +82,7 @@ def _hierarchy_score(
     a: Codon, b: Codon, shade_a: int, shade_b: int,
     *, code_weight: bool = False,
 ) -> float:
-    """Tier 1: spec §8.1 codon hierarchy with shade tiebreaker."""
+    """Tier 1: codon hierarchy with shade tiebreaker."""
     if a.domain != b.domain:
         return 0.0
 
@@ -98,57 +103,116 @@ def _hierarchy_score(
     return score
 
 
-def _relation_score(a: CodonEntry, b: CodonEntry) -> float:
-    """Tier 2: exact-codon match between either token's primary and the
-    other's stamped related codons. Reads ONLY the bytes already in the
-    two CodonEntry's — no codebook, no graph file, no model.
+def _relation_score(a: CodonEntry, b: CodonEntry, profile: ScoringProfile) -> float:
+    """Tier 2: typed in-strand relation matching.
+
+    Positive relation types contribute according to their native label.
+    Antonym/opposition edges are handled by a separate contradiction
+    penalty so they can reduce an otherwise high hierarchy score.
     """
     best = 0.0
 
-    # a's related ↔ b's primary
-    for rel_codon, rel_w in a.related:
-        if rel_codon.is_null:
+    for rel in a.related:
+        if rel.codon.is_null or rel.relation == RelationType.ANTONYM:
             continue
-        if rel_codon == b.codon:
-            s = (rel_w / 255.0) * 0.85
-            if s > best:
-                best = s
+        rel_scale = profile.relation_scale.get(rel.relation, 0.72)
+        if rel.codon == b.codon:
+            s = (rel.clamped_weight() / 255.0) * rel_scale * profile.relation_multiplier
+            best = max(best, s)
+        elif profile.relation_hierarchy_weight > 0:
+            soft = _hierarchy_score(rel.codon, b.codon, a.shade, b.shade)
+            if soft > 0:
+                s = (
+                    (rel.clamped_weight() / 255.0)
+                    * rel_scale
+                    * soft
+                    * profile.relation_hierarchy_weight
+                    * profile.relation_multiplier
+                )
+                best = max(best, s)
 
-    # b's related ↔ a's primary
-    for rel_codon, rel_w in b.related:
-        if rel_codon.is_null:
+    for rel in b.related:
+        if rel.codon.is_null or rel.relation == RelationType.ANTONYM:
             continue
-        if rel_codon == a.codon:
-            s = (rel_w / 255.0) * 0.85
-            if s > best:
-                best = s
+        rel_scale = profile.relation_scale.get(rel.relation, 0.72)
+        if rel.codon == a.codon:
+            s = (rel.clamped_weight() / 255.0) * rel_scale * profile.relation_multiplier
+            best = max(best, s)
+        elif profile.relation_hierarchy_weight > 0:
+            soft = _hierarchy_score(rel.codon, a.codon, b.shade, a.shade)
+            if soft > 0:
+                s = (
+                    (rel.clamped_weight() / 255.0)
+                    * rel_scale
+                    * soft
+                    * profile.relation_hierarchy_weight
+                    * profile.relation_multiplier
+                )
+                best = max(best, s)
 
-    # a.related ∩ b.related (second-order — both tokens point at the
-    # same neighbor concept)
-    for ra, wa in a.related:
-        if ra.is_null:
+    for rel_a in a.related:
+        if rel_a.codon.is_null or rel_a.relation == RelationType.ANTONYM:
             continue
-        for rb, wb in b.related:
-            if rb.is_null:
+        for rel_b in b.related:
+            if rel_b.codon.is_null or rel_b.relation == RelationType.ANTONYM:
                 continue
-            if ra == rb:
-                s = (min(wa, wb) / 255.0) * 0.55
-                if s > best:
-                    best = s
+            if rel_a.codon == rel_b.codon:
+                type_scale = min(
+                    profile.relation_scale.get(rel_a.relation, 0.72),
+                    profile.relation_scale.get(rel_b.relation, 0.72),
+                )
+                s = (
+                    min(rel_a.clamped_weight(), rel_b.clamped_weight())
+                    / 255.0
+                    * type_scale
+                    * 0.65
+                    * profile.relation_multiplier
+                )
+                best = max(best, s)
 
     return best
 
 
-def _pair_score(a: CodonEntry, b: CodonEntry, *, code_aware: bool = False) -> float:
-    """Combine Tier 1 (hierarchy) and Tier 2 (in-strand relations).
+def _antonym_penalty(a: CodonEntry, b: CodonEntry, profile: ScoringProfile) -> float:
+    best = 0.0
+    for rel in a.related:
+        if rel.relation == RelationType.ANTONYM and rel.codon == b.codon:
+            best = max(best, (rel.clamped_weight() / 255.0) * profile.antonym_penalty)
+    for rel in b.related:
+        if rel.relation == RelationType.ANTONYM and rel.codon == a.codon:
+            best = max(best, (rel.clamped_weight() / 255.0) * profile.antonym_penalty)
+    return best
 
-    Pure byte arithmetic — no external state."""
+
+def _pair_score(
+    a: CodonEntry,
+    b: CodonEntry,
+    *,
+    code_aware: bool = False,
+    profile: ScoringProfile,
+) -> float:
+    """Combine codon hierarchy and in-strand typed relations."""
     h = _hierarchy_score(a.codon, b.codon, a.shade, b.shade, code_weight=code_aware)
     if h >= 0.75:
-        # Concept-level codon match — strand has spoken. Skip Tier 2.
-        return h
-    r = _relation_score(a, b)
-    return max(h, r)
+        return max(0.0, h - _antonym_penalty(a, b, profile))
+    r = _relation_score(a, b, profile)
+    return max(0.0, max(h, r) - _antonym_penalty(a, b, profile))
+
+
+def _lexical_coverage(strand_a: Strand, strand_b: Strand) -> float:
+    query_words = {e.word.lower() for e in strand_a.codons if e.word}
+    target_words = {e.word.lower() for e in strand_b.codons if e.word}
+    if not query_words or not target_words:
+        return 0.0
+    return len(query_words & target_words) / len(query_words)
+
+
+def _lexical_dice(strand_a: Strand, strand_b: Strand) -> float:
+    words_a = {e.word.lower() for e in strand_a.codons if e.word}
+    words_b = {e.word.lower() for e in strand_b.codons if e.word}
+    if not words_a or not words_b:
+        return 0.0
+    return (2.0 * len(words_a & words_b)) / (len(words_a) + len(words_b))
 
 
 def compare_strands(
@@ -156,11 +220,17 @@ def compare_strands(
     strand_b: Strand,
     *,
     code_aware: bool = False,
+    conceptnet_bridge: bool = False,
+    profile: str = "auto",
     pattern_bonus: float = 0.0,
 ) -> ComparisonResult:
-    """Greedy alignment with in-strand relatedness scoring.
-
-    Pure byte math — needs only the two strands as input."""
+    """Greedy alignment with typed in-strand relatedness scoring."""
+    scoring = _select_profile(
+        strand_a, strand_b,
+        profile,
+        conceptnet_bridge=conceptnet_bridge,
+        code_aware=code_aware,
+    )
     matches: list[Match] = []
     used_b: set[int] = set()
     matched_a_idx: set[int] = set()
@@ -174,8 +244,7 @@ def compare_strands(
         for j, codon_b in enumerate(strand_b.codons):
             if j in used_b:
                 continue
-            s = _pair_score(codon_a, codon_b, code_aware=code_aware)
-            # Spec §8.3 rule 3: position-proximity bonus for code.
+            s = _pair_score(codon_a, codon_b, code_aware=code_aware, profile=scoring)
             if code_aware and s > 0:
                 len_a = max(1, len(strand_a.codons))
                 len_b = max(1, len(strand_b.codons))
@@ -193,7 +262,22 @@ def compare_strands(
             total_score += best_score
 
     max_len = max(len(strand_a.codons), len(strand_b.codons))
-    overall = total_score / max_len if max_len > 0 else 0.0
+    if scoring.query_coverage and strand_a.codons:
+        if scoring.symmetric_coverage:
+            denom = len(strand_a.codons) + len(strand_b.codons)
+            overall = min(1.0, (2.0 * total_score) / denom) if denom > 0 else 0.0
+        else:
+            overall = min(1.0, total_score / len(strand_a.codons))
+        if scoring.lexical_weight > 0:
+            lexical = (
+                _lexical_dice(strand_a, strand_b)
+                if scoring.symmetric_coverage
+                else _lexical_coverage(strand_a, strand_b)
+            )
+            semantic_weight = 1.0 - scoring.lexical_weight
+            overall = (semantic_weight * overall) + (scoring.lexical_weight * lexical)
+    else:
+        overall = total_score / max_len if max_len > 0 else 0.0
 
     if pattern_bonus > 0:
         overall = min(1.0, overall + pattern_bonus)

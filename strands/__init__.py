@@ -14,6 +14,8 @@ from strands.document import DocumentFingerprint, clone_similarity
 from strands.encoder import EncodeResult, encode
 from strands.identifier import split_identifier
 from strands.index import InMemoryIndex, IndexEntry, SearchResult
+from strands.phrases import add_frame_entries
+from strands.relations import RelationDirection, RelationType, TypedRelation
 from strands.shade import Shade, compute_shade, shade_similarity
 from strands.strand import CodonEntry, Strand
 
@@ -23,6 +25,8 @@ def compare(
     text_b: str,
     *,
     code_aware: bool = False,
+    conceptnet_bridge: bool = False,
+    profile: str = "auto",
 ) -> ComparisonResult:
     """Encode both inputs and return their alignment score.
 
@@ -33,6 +37,8 @@ def compare(
         encode(text_a).strand,
         encode(text_b).strand,
         code_aware=code_aware,
+        conceptnet_bridge=conceptnet_bridge,
+        profile=profile,
     )
 
 
@@ -54,8 +60,12 @@ __all__ = [
     "SearchResult",
     "Shade",
     "Strand",
+    "RelationDirection",
+    "RelationType",
+    "TypedRelation",
     "__version__",
     "clone_similarity",
+    "add_frame_entries",
     "compare",
     "compare_strands",
     "compute_shade",

@@ -8,9 +8,26 @@ from dataclasses import dataclass, field
 from strands.codebook import Codebook, default_codebook
 from strands.context_shade import apply_context, scan_context
 from strands.lemmatizer import lemmatize
+from strands.phrases import add_frame_entries
 from strands.shade import compute_shade
-from strands.strand import VERSION_V2, CodonEntry, Strand
+from strands.strand import VERSION_V3, CodonEntry, Strand
 from strands.tokenizer import STOP_WORDS
+
+
+_ROLE_ENTITY = 1
+_ROLE_ACTION = 2
+_ROLE_PROPERTY = 3
+_ROLE_RELATION = 4
+
+
+def _role_for_domain(domain_code: str) -> int:
+    if domain_code in {"AC", "MV"}:
+        return _ROLE_ACTION
+    if domain_code in {"QU", "SN"}:
+        return _ROLE_PROPERTY
+    if domain_code in {"RL", "SP", "TM", "QT"}:
+        return _ROLE_RELATION
+    return _ROLE_ENTITY
 
 
 @dataclass(slots=True)
@@ -83,12 +100,13 @@ def encode(
                 shade=shade,
                 word=lookup_word,
                 related=cb_entry.related,
+                role=_role_for_domain(cb_entry.domain_code),
                 synset=cb_entry.synset,
             )
         )
 
     return EncodeResult(
-        strand=Strand(codons=entries, version=VERSION_V2),
+        strand=Strand(codons=add_frame_entries(entries), version=VERSION_V3),
         text=text,
         unknowns=unknowns,
     )

@@ -1,0 +1,20 @@
+{
+  "name": "topical",
+  "profile": {
+    "antonym_penalty": 0.08,
+    "relation_hierarchy_weight": 0.40,
+    "relation_scale": {
+      "RELATED": 1.10,
+      "SYN": 0.82,
+      "ISA": 0.78,
+      "CTX": 0.90,
+      "PART": 0.82,
+      "USED_FOR": 0.86,
+      "PROP": 0.78,
+      "CAUSES": 0.74,
+      "ENTAILS": 0.76,
+      "ASSOC": 0.80,
+      "TOPIC": 0.98
+    }
+  }
+}

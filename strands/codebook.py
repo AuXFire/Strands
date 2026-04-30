@@ -14,6 +14,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from strands.codon import DOMAIN_CODES, NULL_CODON, Codon
+from strands.relations import (
+    RELATION_ALIASES,
+    RelationDirection,
+    RelationType,
+    TypedRelation,
+    parse_relation_direction,
+    parse_relation_type,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,7 +30,7 @@ class CodebookEntry:
     codon: Codon
     domain_code: str
     shade_hint: dict
-    related: tuple[tuple[Codon, int], ...] = ()
+    related: tuple[TypedRelation, ...] = ()
     synset: str = ""
 
 
@@ -67,16 +75,28 @@ class Codebook:
             return None
         codon = Codon(domain=domain_id, category=raw["c"], concept=raw["n"])
 
-        related: list[tuple[Codon, int]] = []
-        for rel in raw.get("rel", []):
+        related: list[TypedRelation] = []
+        for rel in raw.get("trel", raw.get("rel", [])):
             try:
-                rel_codon_repr, rel_w = rel[0], int(rel[1])
+                if len(rel) >= 3 and isinstance(rel[0], str) and rel[0].upper() in RELATION_ALIASES:
+                    rel_type = parse_relation_type(rel[0])
+                    rel_codon_repr, rel_w = rel[1], int(rel[2])
+                    rel_dir = parse_relation_direction(rel[3]) if len(rel) >= 4 else RelationDirection.UNDIRECTED
+                else:
+                    rel_codon_repr, rel_w = rel[0], int(rel[1])
+                    rel_type = parse_relation_type(rel[2]) if len(rel) >= 3 else RelationType.RELATED
+                    rel_dir = parse_relation_direction(rel[3]) if len(rel) >= 4 else RelationDirection.UNDIRECTED
             except (KeyError, IndexError, TypeError, ValueError):
                 continue
             rel_codon = self._decode_codon(rel_codon_repr)
             if rel_codon is None or rel_codon.is_null:
                 continue
-            related.append((rel_codon, max(0, min(255, rel_w))))
+            related.append(TypedRelation(
+                codon=rel_codon,
+                weight=max(0, min(255, rel_w)),
+                relation=rel_type,
+                direction=rel_dir,
+            ))
 
         return CodebookEntry(
             word=word,

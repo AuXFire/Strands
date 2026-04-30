@@ -1,0 +1,17 @@
+{
+  "name": "sentence",
+  "profile": {
+    "antonym_penalty": 0.15,
+    "query_coverage": true,
+    "symmetric_coverage": true,
+    "lexical_weight": 0.68,
+    "relation_multiplier": 1.05,
+    "relation_hierarchy_weight": 0.0,
+    "relation_scale": {
+      "RELATED": 0.75,
+      "SYN": 1.05,
+      "ASSOC": 0.25,
+      "TOPIC": 0.42
+    }
+  }
+}
