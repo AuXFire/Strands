@@ -261,16 +261,33 @@ def build(
                     print(f"  ... {cn_edges:,} ConceptNet edges added (scanned {scanned:,})")
         print(f"  ConceptNet edges: {cn_edges:,}")
 
-    # ---- Pass 5: sort edges by source_id, build edge offsets ------------
-    print("Sorting + indexing edges …")
-    edges_buffer.sort(key=lambda e: (e[0], e[2]))  # by source_id, then relation
-    n_edges = len(edges_buffer)
+    # ---- Pass 5: cap per-node edges at 255 (uint8 max), keeping top-weight,
+    # then sort + index --------------------------------------------------
+    print("Capping per-node edges at 255 (uint8 limit) and sorting …")
+    edges_by_src: dict[int, list[tuple]] = defaultdict(list)
+    for e in edges_buffer:
+        edges_by_src[e[0]].append(e)
+    capped: list[tuple] = []
+    n_truncated = 0
+    for src_id, lst in edges_by_src.items():
+        if len(lst) > 255:
+            lst.sort(key=lambda e: -e[3])  # sort by weight desc
+            n_truncated += len(lst) - 255
+            lst = lst[:255]
+        # within each source, sort by relation type for stable order
+        lst.sort(key=lambda e: e[2])
+        capped.extend(lst)
+    if n_truncated:
+        print(f"  truncated {n_truncated:,} low-weight edges from dense hub nodes")
+
+    capped.sort(key=lambda e: (e[0], e[2]))  # by source_id, then relation
+    n_edges = len(capped)
 
     edge_array = np.zeros(n_edges, dtype=EDGE_DTYPE)
     node_edge_offsets = [0] * n_synsets
     node_edge_counts = [0] * n_synsets
     cur_src = -1
-    for idx, (src_id, tgt_id, rel, weight, src_attr) in enumerate(edges_buffer):
+    for idx, (src_id, tgt_id, rel, weight, src_attr) in enumerate(capped):
         if src_id != cur_src:
             node_edge_offsets[src_id] = idx
             cur_src = src_id
