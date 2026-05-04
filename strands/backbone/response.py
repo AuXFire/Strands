@@ -23,6 +23,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from strands.backbone.compute_module import (
+    ComputeModule,
+    build_conditioning,
+)
 from strands.backbone.inference import InferenceResult, infer
 from strands.backbone.loader import Backbone
 from strands.backbone.schema import Rel
@@ -68,6 +72,11 @@ class Response:
     confidence: float
     needs_compute_module: bool = False
     state: DiscourseState | None = None
+    # True when the Compute Module ran and overrode the deterministic
+    # answer. False when the deterministic answer was returned (either
+    # because confidence was high enough, or because the Compute Module
+    # deferred by returning None).
+    compute_module_used: bool = False
 
 
 # --- Helpers ------------------------------------------------------------
@@ -141,14 +150,26 @@ def _answer_question(
     backbone: Backbone, anchor_id: int,
 ) -> tuple[str, float]:
     """For a question, prefer the gloss; fall back to a hypernym
-    sentence; final fallback is just the lemmas list."""
+    sentence; final fallback is just the lemmas list. When a gloss is
+    very short, append a hypernym clause so the answer carries more
+    signal."""
     subject = _best_lemma(backbone, anchor_id) or "it"
     gloss = backbone.gloss_for(anchor_id)
     if gloss:
-        # WordNet glosses are lowercase definitions, often without a
-        # subject. Render as: "<subject> is <gloss>." capitalized.
         first = gloss[0].lower() + gloss[1:] if len(gloss) > 1 else gloss
         text = f"{subject.capitalize()} is {first}."
+        # Glosses under ~40 chars are often terse — fold in the hypernym
+        # so the answer still reads as substantive.
+        if len(gloss) < 40:
+            hyp = _hypernym_target(backbone, anchor_id)
+            if hyp:
+                target_lemma = _best_lemma(backbone, hyp[0])
+                if target_lemma and target_lemma != subject:
+                    article = _article(target_lemma)
+                    text = (
+                        f"{subject.capitalize()} is {first}, "
+                        f"{article} kind of {target_lemma}."
+                    )
         return text, 0.9
 
     hyp = _hypernym_target(backbone, anchor_id)
@@ -202,11 +223,16 @@ def respond(
     prompt: str,
     *,
     state: DiscourseState | None = None,
+    compute: ComputeModule | None = None,
+    confidence_floor: float = 0.5,
 ) -> Response:
     """Run the full BDRM pipeline on a prompt and return a response.
 
-    Pure deterministic — no NN. Compute Module integration point (M6)
-    will set ``needs_compute_module=True`` when it's wired in.
+    Deterministic by default. When ``compute`` is supplied and the
+    deterministic confidence falls below ``confidence_floor``, the
+    Compute Module (§4) is invoked with a Conditioning payload built
+    from the deterministic state. The CM may return a replacement
+    string or ``None`` to defer to the deterministic answer.
     """
     if state is None:
         state = DiscourseState()
@@ -235,8 +261,20 @@ def respond(
     # Step 5: discourse state update.
     state.update(result, anchor_id=anchor_id)
 
-    # Confidence audit — flag if low.
-    needs_compute = conf < 0.5
+    # Confidence audit — flag if low. Compute Module (§4) fires here.
+    needs_compute = conf < confidence_floor
+    compute_used = False
+    if needs_compute and compute is not None:
+        conditioning = build_conditioning(
+            backbone, result,
+            primary_anchor_id=anchor_id,
+            deterministic_answer=text,
+            deterministic_confidence=conf,
+        )
+        override = compute.complete(conditioning)
+        if override is not None:
+            text = override
+            compute_used = True
 
     return Response(
         text=text,
@@ -245,4 +283,5 @@ def respond(
         confidence=conf,
         needs_compute_module=needs_compute,
         state=state,
+        compute_module_used=compute_used,
     )

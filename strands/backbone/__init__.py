@@ -12,6 +12,13 @@ It is built once (via ``scripts/build_backbone.py``) and memory-mapped
 at runtime.
 """
 
+from strands.backbone.compute_module import (
+    AnchorFact,
+    ComputeModule,
+    Conditioning,
+    StubComputeModule,
+    build_conditioning,
+)
 from strands.backbone.inference import (
     InferenceConfig,
     InferenceResult,
@@ -35,9 +42,12 @@ from strands.backbone.schema import (
 )
 
 __all__ = [
+    "AnchorFact",
     "Backbone",
     "BackboneNode",
+    "ComputeModule",
     "ConceptType",
+    "Conditioning",
     "DiscourseState",
     "EDGE_DTYPE",
     "InferenceConfig",
@@ -46,7 +56,9 @@ __all__ = [
     "Rel",
     "Response",
     "Source",
+    "StubComputeModule",
     "TokenCandidate",
+    "build_conditioning",
     "classify_intent",
     "disambiguate",
     "extract_subgraph",
