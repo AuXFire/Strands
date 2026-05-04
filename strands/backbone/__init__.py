@@ -12,6 +12,18 @@ It is built once (via ``scripts/build_backbone.py``) and memory-mapped
 at runtime.
 """
 
+from strands.backbone.inference import (
+    InferenceConfig,
+    InferenceResult,
+    TokenCandidate,
+    classify_intent,
+    disambiguate,
+    extract_subgraph,
+    infer,
+    map_tokens_to_candidates,
+    spread_activation,
+    tag_uncertain,
+)
 from strands.backbone.loader import Backbone, BackboneNode, load
 from strands.backbone.schema import (
     EDGE_DTYPE,
@@ -26,8 +38,18 @@ __all__ = [
     "BackboneNode",
     "ConceptType",
     "EDGE_DTYPE",
+    "InferenceConfig",
+    "InferenceResult",
     "NODE_DTYPE",
     "Rel",
     "Source",
+    "TokenCandidate",
+    "classify_intent",
+    "disambiguate",
+    "extract_subgraph",
+    "infer",
     "load",
+    "map_tokens_to_candidates",
+    "spread_activation",
+    "tag_uncertain",
 ]
