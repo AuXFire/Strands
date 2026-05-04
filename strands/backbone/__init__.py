@@ -25,6 +25,7 @@ from strands.backbone.inference import (
     tag_uncertain,
 )
 from strands.backbone.loader import Backbone, BackboneNode, load
+from strands.backbone.response import DiscourseState, Response, respond
 from strands.backbone.schema import (
     EDGE_DTYPE,
     NODE_DTYPE,
@@ -37,11 +38,13 @@ __all__ = [
     "Backbone",
     "BackboneNode",
     "ConceptType",
+    "DiscourseState",
     "EDGE_DTYPE",
     "InferenceConfig",
     "InferenceResult",
     "NODE_DTYPE",
     "Rel",
+    "Response",
     "Source",
     "TokenCandidate",
     "classify_intent",
@@ -50,6 +53,7 @@ __all__ = [
     "infer",
     "load",
     "map_tokens_to_candidates",
+    "respond",
     "spread_activation",
     "tag_uncertain",
 ]

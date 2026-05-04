@@ -38,10 +38,12 @@ class Backbone:
         edges: np.ndarray,
         lemmas_buf: bytes,
         manifest: dict,
+        glosses_buf: bytes = b"\x00",
     ) -> None:
         self.nodes = nodes
         self.edges = edges
         self.lemmas_buf = lemmas_buf
+        self.glosses_buf = glosses_buf
         self.manifest = manifest
         # Built lazily.
         self._lemma_to_node_ids: dict[str, list[int]] | None = None
@@ -88,6 +90,18 @@ class Backbone:
         if d == 0xFF:
             return None
         return (d, int(n["codon_category"]), int(n["codon_concept"]))
+
+    def gloss_for(self, node_id: int) -> str:
+        """Return the WordNet definition of ``node_id`` or empty string."""
+        if "gloss_offset" not in self.nodes.dtype.names:
+            return ""
+        offset = int(self.nodes[node_id]["gloss_offset"])
+        if offset == 0:
+            return ""
+        end = self.glosses_buf.find(b"\x00", offset)
+        if end == -1:
+            return ""
+        return self.glosses_buf[offset:end].decode("utf-8", errors="replace")
 
     def node(self, node_id: int) -> BackboneNode:
         n = self.nodes[node_id]
@@ -140,11 +154,17 @@ def load(out_dir: Path | str) -> Backbone:
     nodes_path = out_dir / manifest["files"]["nodes"]
     edges_path = out_dir / manifest["files"]["edges"]
     lemmas_path = out_dir / manifest["files"]["lemmas"]
+    glosses_filename = manifest["files"].get("glosses")
 
     # Memory-map for O(1) loading regardless of file size.
     nodes = np.memmap(nodes_path, dtype=NODE_DTYPE, mode="r")
     edges = np.memmap(edges_path, dtype=EDGE_DTYPE, mode="r")
     lemmas_buf = lemmas_path.read_bytes()
+    glosses_buf = b"\x00"
+    if glosses_filename:
+        glosses_path = out_dir / glosses_filename
+        if glosses_path.exists():
+            glosses_buf = glosses_path.read_bytes()
 
     if int(manifest["node_count"]) != nodes.shape[0]:
         raise ValueError(
@@ -157,4 +177,7 @@ def load(out_dir: Path | str) -> Backbone:
             f"file has {edges.shape[0]}"
         )
 
-    return Backbone(nodes=nodes, edges=edges, lemmas_buf=lemmas_buf, manifest=manifest)
+    return Backbone(
+        nodes=nodes, edges=edges, lemmas_buf=lemmas_buf,
+        manifest=manifest, glosses_buf=glosses_buf,
+    )

@@ -170,19 +170,32 @@ def build(
         s.name(): i for i, s in enumerate(all_synsets)
     }
 
-    # ---- Pass 2: build lemma table + lemma_offset per node ---------------
-    print("Building lemma table …")
+    # ---- Pass 2: build lemma + gloss tables ------------------------------
+    print("Building lemma + gloss tables …")
     lemma_buf = bytearray()
+    gloss_buf = bytearray(b"\x00")  # offset 0 reserved as "no gloss" sentinel
     node_lemma_offsets: list[int] = [0] * n_synsets
     node_lemma_counts: list[int] = [0] * n_synsets
+    node_gloss_offsets: list[int] = [0] * n_synsets
     for i, synset in enumerate(all_synsets):
         lemmas = sorted({l.name().replace("_", " ").lower() for l in synset.lemmas()})
         node_lemma_offsets[i] = len(lemma_buf)
         node_lemma_counts[i] = min(255, len(lemmas))
         for lemma in lemmas[:255]:
             lemma_buf.extend(lemma.encode("utf-8"))
-            lemma_buf.append(0)  # null separator
+            lemma_buf.append(0)
+        # Gloss = WordNet definition. Truncate egregiously long ones.
+        try:
+            gloss = (synset.definition() or "").strip()
+        except Exception:
+            gloss = ""
+        if gloss:
+            node_gloss_offsets[i] = len(gloss_buf)
+            gloss_buf.extend(gloss[:512].encode("utf-8", errors="replace"))
+            gloss_buf.append(0)
+        # else: leave at 0 (sentinel)
     print(f"  lemma table: {len(lemma_buf) / 1024:.1f} KB")
+    print(f"  gloss table: {len(gloss_buf) / 1024:.1f} KB")
 
     # ---- Pass 3: build edges from WordNet relations ----------------------
     print("Building WordNet edges …")
@@ -320,6 +333,7 @@ def build(
         n["relationship_offset"] = node_edge_offsets[i]
         n["frame_id"] = 0
         n["language_independent_id"] = i
+        n["gloss_offset"] = node_gloss_offsets[i]
         # Codon link: try the first lemma against the codebook.
         try:
             first_lemma = synset.lemmas()[0].name().replace("_", " ").lower()
@@ -339,11 +353,13 @@ def build(
     nodes_path = out_dir / "backbone.nodes"
     edges_path = out_dir / "backbone.edges"
     lemmas_path = out_dir / "backbone.lemmas"
+    glosses_path = out_dir / "backbone.glosses"
     manifest_path = out_dir / "backbone.manifest.json"
 
     nodes_path.write_bytes(node_array.tobytes(order="C"))
     edges_path.write_bytes(edge_array.tobytes(order="C"))
     lemmas_path.write_bytes(bytes(lemma_buf))
+    glosses_path.write_bytes(bytes(gloss_buf))
 
     manifest = {
         "version": "0.1.0",
@@ -361,11 +377,14 @@ def build(
             "nodes": nodes_path.name,
             "edges": edges_path.name,
             "lemmas": lemmas_path.name,
+            "glosses": glosses_path.name,
         },
         "stats": {
             "wordnet_edges": n_edges - cn_edges,
             "conceptnet_edges": cn_edges,
             "nodes_with_codon": int(np.sum(node_array["codon_domain"] != 0xFF)),
+            "nodes_with_gloss": int(np.sum(node_array["gloss_offset"] != 0)),
+            "gloss_buffer_bytes": int(len(gloss_buf)),
         },
     }
     with manifest_path.open("w", encoding="utf-8") as f:
@@ -374,6 +393,7 @@ def build(
     print(f"  nodes: {nodes_path.stat().st_size / 1024 / 1024:.1f} MB")
     print(f"  edges: {edges_path.stat().st_size / 1024 / 1024:.1f} MB")
     print(f"  lemmas: {lemmas_path.stat().st_size / 1024 / 1024:.1f} MB")
+    print(f"  glosses: {glosses_path.stat().st_size / 1024 / 1024:.1f} MB")
     return manifest
 
 

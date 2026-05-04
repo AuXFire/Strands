@@ -105,7 +105,10 @@ NODE_DTYPE = np.dtype([
     ("codon_domain",             np.uint8),     # offset 40,  1 byte
     ("codon_category",           np.uint8),     # offset 41,  1 byte
     ("codon_concept",            np.uint8),     # offset 42,  1 byte
-    ("reserved",                 "S85"),        # offset 43, 85 bytes
+    # Gloss table pointer — offset of this node's null-terminated UTF-8
+    # definition string in the gloss_buffer file. 0 = no gloss.
+    ("gloss_offset",             np.uint32),    # offset 43,  4 bytes
+    ("reserved",                 "S81"),        # offset 47, 81 bytes
 ], align=False)
 
 # Sanity check: dtype matches the 128-byte spec.
