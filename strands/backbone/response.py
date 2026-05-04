@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from strands.backbone.beliefs import Belief, extract_belief
 from strands.backbone.compute_module import (
     ComputeModule,
     build_conditioning,
@@ -169,6 +170,10 @@ class DiscourseState:
     # so far when generating a response.
     history: list[TurnRecord] = field(default_factory=list)
     history_limit: int = 16
+    # User-stated beliefs lifted from inform turns (BDRM §2.3 volatility).
+    # These are session-scoped: held in memory, not persisted to the
+    # backbone, but visible to the Compute Module via Conditioning.
+    session_beliefs: list[Belief] = field(default_factory=list)
 
     def update(
         self, result: InferenceResult, *,
@@ -464,6 +469,17 @@ def _inform_acknowledgment(
     return f"Got it — noted about {subject}.", 0.7
 
 
+def _inform_acknowledgment_with_belief(
+    belief: Belief,
+) -> tuple[str, float]:
+    """When inform-turn belief extraction succeeds, the acknowledgement
+    echoes the user's own words rather than a re-templated form — this
+    avoids subject-verb agreement bugs ('cats is cute') and confirms
+    the exact wording we registered. Higher confidence than the generic
+    'Got it' since we actually structured the fact."""
+    return f"Got it — noted that {belief.raw_prompt.rstrip('.!?')}.", 0.85
+
+
 def _instruction_acknowledgment(
     backbone: Backbone, anchor_id: int | None,
 ) -> tuple[str, float]:
@@ -565,7 +581,18 @@ def respond(
     elif result.intent == "social":
         text, conf = _social_response(prompt)
     elif result.intent == "inform":
-        text, conf = _inform_acknowledgment(backbone, anchor_id)
+        # Try to lift the declarative into a structured Belief that
+        # we keep on the discourse state. The acknowledgement template
+        # echoes the (subject, relation, target) when extraction worked
+        # so the user knows we registered the fact.
+        belief = extract_belief(
+            backbone, prompt, turn_index=state.turn_count + 1,
+        )
+        if belief is not None:
+            state.session_beliefs.append(belief)
+            text, conf = _inform_acknowledgment_with_belief(belief)
+        else:
+            text, conf = _inform_acknowledgment(backbone, anchor_id)
     else:
         text, conf = "Could you rephrase that?", 0.3
 
@@ -590,6 +617,7 @@ def respond(
             deterministic_answer=text,
             deterministic_confidence=conf,
             history=state.history,
+            user_beliefs=state.session_beliefs,
         )
         override = compute.complete(conditioning)
         if override is not None:

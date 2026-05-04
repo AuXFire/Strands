@@ -12,8 +12,10 @@ It is built once (via ``scripts/build_backbone.py``) and memory-mapped
 at runtime.
 """
 
+from strands.backbone.beliefs import Belief, extract_belief
 from strands.backbone.compute_module import (
     AnchorFact,
+    BeliefRecord,
     ComputeModule,
     Conditioning,
     Fact,
@@ -52,6 +54,8 @@ __all__ = [
     "AnchorFact",
     "Backbone",
     "BackboneNode",
+    "Belief",
+    "BeliefRecord",
     "ComputeModule",
     "ConceptType",
     "Conditioning",
@@ -71,6 +75,7 @@ __all__ = [
     "build_conditioning",
     "classify_intent",
     "disambiguate",
+    "extract_belief",
     "extract_subgraph",
     "infer",
     "load",

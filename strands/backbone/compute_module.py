@@ -71,6 +71,19 @@ class HistoryTurn:
 
 
 @dataclass(slots=True)
+class BeliefRecord:
+    """One user-stated belief packaged for the Compute Module. The
+    NN sees a (subject, relation, target, raw) tuple plus the turn
+    where it was stated, so it can ground responses against what the
+    user told us — distinct from what the backbone says."""
+    subject_lemma: str
+    relation: str
+    target_lemma: str
+    raw: str
+    turn_index: int
+
+
+@dataclass(slots=True)
 class Conditioning:
     """The full conditioning payload handed to the Compute Module.
 
@@ -86,6 +99,7 @@ class Conditioning:
     deterministic_confidence: float = 0.0
     unknowns: list[str] = field(default_factory=list)
     history: list[HistoryTurn] = field(default_factory=list)
+    user_beliefs: list[BeliefRecord] = field(default_factory=list)
 
 
 class ComputeModule(Protocol):
@@ -200,6 +214,22 @@ def _anchor_fact(
     )
 
 
+def _beliefs_to_records(beliefs: "list | None") -> list[BeliefRecord]:
+    """Flatten a list of Belief into BeliefRecord (drops backbone IDs)."""
+    if not beliefs:
+        return []
+    out: list[BeliefRecord] = []
+    for b in beliefs:
+        out.append(BeliefRecord(
+            subject_lemma=b.subject_surface,
+            relation=b.relation.name,
+            target_lemma=b.target_surface,
+            raw=b.raw_prompt,
+            turn_index=b.turn_index,
+        ))
+    return out
+
+
 def _history_to_turns(history: "list | None") -> list[HistoryTurn]:
     """Flatten a list of TurnRecord into HistoryTurn (drops backbone IDs
     the NN doesn't need)."""
@@ -228,13 +258,15 @@ def build_conditioning(
     deterministic_confidence: float,
     related_top_k: int = 5,
     history: "list | None" = None,
+    user_beliefs: "list | None" = None,
 ) -> Conditioning:
     """Pack the deterministic state into a Conditioning payload.
 
-    ``history`` is an optional list of TurnRecord (from DiscourseState)
-    representing prior turns. When supplied, it's flattened into
-    HistoryTurn entries so the Compute Module sees the conversation
-    so far without backbone-internal IDs."""
+    ``history`` is an optional list of TurnRecord representing prior
+    turns. ``user_beliefs`` is a list of Belief lifted from past inform
+    turns. Both are flattened into NN-friendly records (no backbone
+    IDs) so the Compute Module sees the conversation context plus
+    whatever the user has told us."""
     primary = (
         _anchor_fact(
             backbone,
@@ -265,6 +297,7 @@ def build_conditioning(
         primary_anchor=primary,
         related_anchors=related,
         history=_history_to_turns(history),
+        user_beliefs=_beliefs_to_records(user_beliefs),
         deterministic_answer=deterministic_answer,
         deterministic_confidence=deterministic_confidence,
         unknowns=list(inference.unknowns),
