@@ -24,6 +24,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from strands.backbone.compute_module import (
     ComputeModule,
     build_conditioning,
@@ -46,6 +48,44 @@ def _prompt_has_pronoun(prompt: str) -> bool:
     return any(w in _PRONOUNS for w in _WORD_RE.findall(prompt.lower()))
 
 
+# Prompts that ask for additional information about the active topic.
+# Matched on the raw prompt (after stripping/lowercasing) — the intent
+# classifier treats these as instructions or social.
+_ELABORATION_PHRASES = (
+    "tell me more",
+    "what else",
+    "and what else",
+    "go on",
+    "continue",
+    "anything else",
+    "more about",
+)
+
+
+def _is_elaboration(prompt: str) -> bool:
+    s = prompt.strip().lower().rstrip(".?!")
+    if s in {"more", "and", "and?", "go on", "continue"}:
+        return True
+    return any(s.startswith(p) for p in _ELABORATION_PHRASES)
+
+
+# Relation walk for topic elaboration, in priority order. Each entry is
+# (relation, sentence template) where {subject} and {target} are filled
+# with backbone lemmas. Templates are kept simple — surface smoothing
+# (capitalize, period) happens at the call site.
+_ELABORATION_RELATIONS: tuple[tuple[Rel, str], ...] = (
+    (Rel.HYPERNYM,     "{subject} is a kind of {target}"),
+    (Rel.HAS_PROPERTY, "{subject} is {target}"),
+    (Rel.MERONYM,      "{subject} has {target} as a part"),
+    (Rel.AT_LOCATION,  "{subject} can be found at {target}"),
+    (Rel.USED_FOR,     "{subject} is used for {target}"),
+    (Rel.CAPABLE_OF,   "{subject} is capable of {target}"),
+    (Rel.MADE_OF,      "{subject} is made of {target}"),
+    (Rel.HYPONYM,      "examples of {subject} include {target}"),
+    (Rel.HOLONYM,      "{subject} is part of {target}"),
+)
+
+
 # --- Single-turn discourse state stub (M3) ------------------------------
 
 
@@ -57,6 +97,10 @@ class DiscourseState:
     entity_register: dict[str, int] = field(default_factory=dict)  # surface→node_id
     last_intent: str = ""
     turn_count: int = 0
+    # Facts emitted by the elaboration walker so successive
+    # 'tell me more' calls produce novel content. Key:
+    # (subject_node_id, relation_id, target_node_id).
+    emitted_facts: set[tuple[int, int, int]] = field(default_factory=set)
 
     def update(
         self, result: InferenceResult, *,
@@ -211,6 +255,35 @@ def _answer_question(
     return f"I don't have enough information about {subject}.", 0.2
 
 
+def _elaborate_topic(
+    backbone: Backbone, anchor_id: int,
+    emitted: set[tuple[int, int, int]],
+) -> tuple[str, float]:
+    """Walk relations from the anchor in priority order, returning the
+    first highest-weight target that hasn't been emitted yet. Records
+    the chosen fact in ``emitted`` so later elaboration calls produce
+    novel content."""
+    subject = _best_lemma(backbone, anchor_id) or "it"
+    for rel, template in _ELABORATION_RELATIONS:
+        edges = backbone.edges_with_relation(anchor_id, rel)
+        if edges.size == 0:
+            continue
+        order = np.argsort(-edges["weight"].astype(np.int64))
+        for idx in order:
+            target_id = int(edges[int(idx)]["target_id"])
+            key = (anchor_id, int(rel), target_id)
+            if key in emitted:
+                continue
+            target_lemma = _best_lemma(backbone, target_id)
+            if not target_lemma or target_lemma == subject:
+                continue
+            emitted.add(key)
+            sentence = template.format(subject=subject, target=target_lemma)
+            return sentence[0].upper() + sentence[1:] + ".", 0.8
+    # Exhausted — nothing new to say.
+    return f"That's all I have about {subject}.", 0.4
+
+
 def _inform_acknowledgment(
     backbone: Backbone, anchor_id: int | None,
 ) -> tuple[str, float]:
@@ -281,8 +354,20 @@ def respond(
         anchor_id = state.active_topic_node_ids[0]
         pronoun_resolved = True
 
+    # Elaboration short-circuit: 'tell me more', 'continue', 'and?' —
+    # the rule-based intent classifier sees these as instruction or
+    # social, but the conversational meaning is "give me another fact
+    # about the active topic". Route directly to the relation walker
+    # when an active topic exists.
+    elaboration = _is_elaboration(prompt)
+    if elaboration and state.active_topic_node_ids:
+        topic_id = state.active_topic_node_ids[0]
+        text, conf = _elaborate_topic(backbone, topic_id, state.emitted_facts)
+        # Use the topic itself as the anchor so downstream code (e.g.
+        # the Compute Module conditioning) sees a meaningful subject.
+        anchor_id = topic_id
     # Step 3 + 4: content selection + surface realization based on intent.
-    if result.intent == "question_answering":
+    elif result.intent == "question_answering":
         if anchor_id is None:
             text, conf = "I don't know what you're asking about.", 0.2
         else:
