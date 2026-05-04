@@ -14,3 +14,4 @@ venv/
 
 # Layered build cache (deterministic, regeneratable from sources)
 strands/build/_cache/
+/strands/data/backbone/
