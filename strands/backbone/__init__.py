@@ -13,6 +13,7 @@ at runtime.
 """
 
 from strands.backbone.beliefs import Belief, extract_belief
+from strands.backbone.yesno import YesNoAnswer, answer_yesno, is_yesno_question
 from strands.backbone.compute_module import (
     AnchorFact,
     BeliefRecord,
@@ -63,6 +64,7 @@ __all__ = [
     "Fact",
     "HistoryTurn",
     "TurnRecord",
+    "YesNoAnswer",
     "EDGE_DTYPE",
     "InferenceConfig",
     "InferenceResult",
@@ -75,7 +77,9 @@ __all__ = [
     "build_conditioning",
     "classify_intent",
     "disambiguate",
+    "answer_yesno",
     "extract_belief",
+    "is_yesno_question",
     "extract_subgraph",
     "infer",
     "load",

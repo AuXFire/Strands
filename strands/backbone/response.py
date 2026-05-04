@@ -31,6 +31,7 @@ from strands.backbone.compute_module import (
     ComputeModule,
     build_conditioning,
 )
+from strands.backbone.yesno import answer_yesno, is_yesno_question
 from strands.backbone.inference import InferenceResult, infer
 from strands.backbone.loader import Backbone
 from strands.backbone.schema import Rel
@@ -558,7 +559,15 @@ def respond(
         anchor_id = topic_id
     # Step 3 + 4: content selection + surface realization based on intent.
     elif result.intent == "question_answering":
-        if anchor_id is None:
+        # Yes/no questions are a distinct class — try them first.
+        # When a polar pattern matches, return its verdict directly;
+        # the answer is a sentence with binary semantics ('Yes, …'/'No, …')
+        # that the NN can later be trained to mirror.
+        yn = answer_yesno(backbone, prompt) if is_yesno_question(prompt) else None
+        if yn is not None:
+            text, conf = yn.text, yn.confidence
+            qtype = "yesno"
+        elif anchor_id is None:
             text, conf = "I don't know what you're asking about.", 0.2
         else:
             qtype = _classify_question_type(prompt)
