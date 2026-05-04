@@ -84,6 +84,19 @@ class BeliefRecord:
 
 
 @dataclass(slots=True)
+class SpeechActTag:
+    """Rich speech-act descriptor for the current turn. Derived from
+    intent + question_type + surface cues (negation, hedging,
+    sentiment). The NN sees this so it can pick register and tone."""
+    act: str          # 'question' | 'assertion' | 'directive' | 'expressive'
+    subtype: str      # 'yesno' | 'definition' | 'greeting' | …
+    polarity: int     # +1, 0, -1
+    hedged: bool
+    has_negation: bool
+    sentiment: int    # +1, 0, -1
+
+
+@dataclass(slots=True)
 class Conditioning:
     """The full conditioning payload handed to the Compute Module.
 
@@ -100,6 +113,7 @@ class Conditioning:
     unknowns: list[str] = field(default_factory=list)
     history: list[HistoryTurn] = field(default_factory=list)
     user_beliefs: list[BeliefRecord] = field(default_factory=list)
+    speech_act: SpeechActTag | None = None
 
 
 class ComputeModule(Protocol):
@@ -214,6 +228,19 @@ def _anchor_fact(
     )
 
 
+def _speech_act_to_tag(act: "object | None") -> SpeechActTag | None:
+    if act is None:
+        return None
+    return SpeechActTag(
+        act=act.act,
+        subtype=act.subtype,
+        polarity=act.polarity,
+        hedged=act.hedged,
+        has_negation=act.has_negation,
+        sentiment=act.sentiment,
+    )
+
+
 def _beliefs_to_records(beliefs: "list | None") -> list[BeliefRecord]:
     """Flatten a list of Belief into BeliefRecord (drops backbone IDs)."""
     if not beliefs:
@@ -259,6 +286,7 @@ def build_conditioning(
     related_top_k: int = 5,
     history: "list | None" = None,
     user_beliefs: "list | None" = None,
+    speech_act: "object | None" = None,
 ) -> Conditioning:
     """Pack the deterministic state into a Conditioning payload.
 
@@ -298,6 +326,7 @@ def build_conditioning(
         related_anchors=related,
         history=_history_to_turns(history),
         user_beliefs=_beliefs_to_records(user_beliefs),
+        speech_act=_speech_act_to_tag(speech_act),
         deterministic_answer=deterministic_answer,
         deterministic_confidence=deterministic_confidence,
         unknowns=list(inference.unknowns),

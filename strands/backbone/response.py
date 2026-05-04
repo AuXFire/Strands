@@ -31,6 +31,7 @@ from strands.backbone.compute_module import (
     ComputeModule,
     build_conditioning,
 )
+from strands.backbone.speech_act import classify_speech_act
 from strands.backbone.yesno import answer_yesno, is_yesno_question
 from strands.backbone.inference import InferenceResult, infer
 from strands.backbone.loader import Backbone
@@ -620,6 +621,9 @@ def respond(
     needs_compute = conf < confidence_floor
     compute_used = False
     if needs_compute and compute is not None:
+        speech_act = classify_speech_act(
+            prompt, intent=result.intent, question_type=qtype,
+        )
         conditioning = build_conditioning(
             backbone, result,
             primary_anchor_id=anchor_id,
@@ -627,6 +631,7 @@ def respond(
             deterministic_confidence=conf,
             history=state.history,
             user_beliefs=state.session_beliefs,
+            speech_act=speech_act,
         )
         override = compute.complete(conditioning)
         if override is not None:
