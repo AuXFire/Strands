@@ -16,6 +16,8 @@ from strands.backbone.compute_module import (
     AnchorFact,
     ComputeModule,
     Conditioning,
+    Fact,
+    HistoryTurn,
     StubComputeModule,
     build_conditioning,
 )
@@ -32,7 +34,12 @@ from strands.backbone.inference import (
     tag_uncertain,
 )
 from strands.backbone.loader import Backbone, BackboneNode, load
-from strands.backbone.response import DiscourseState, Response, respond
+from strands.backbone.response import (
+    DiscourseState,
+    Response,
+    TurnRecord,
+    respond,
+)
 from strands.backbone.schema import (
     EDGE_DTYPE,
     NODE_DTYPE,
@@ -49,6 +56,9 @@ __all__ = [
     "ConceptType",
     "Conditioning",
     "DiscourseState",
+    "Fact",
+    "HistoryTurn",
+    "TurnRecord",
     "EDGE_DTYPE",
     "InferenceConfig",
     "InferenceResult",

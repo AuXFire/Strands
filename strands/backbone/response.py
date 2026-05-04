@@ -137,9 +137,25 @@ _ELABORATION_RELATIONS: tuple[tuple[Rel, str], ...] = (
 
 
 @dataclass(slots=True)
+class TurnRecord:
+    """One past turn, frozen for replay into the Compute Module
+    conditioning. Keeps just enough to reconstruct the conversation
+    without dragging the whole InferenceResult forward."""
+    turn_index: int
+    prompt: str
+    response: str
+    intent: str
+    question_type: str = ""
+    primary_anchor_id: int | None = None
+    primary_anchor_lemma: str = ""
+    pronoun_resolved: bool = False
+    confidence: float = 0.0
+
+
+@dataclass(slots=True)
 class DiscourseState:
-    """Minimal multi-turn state. Stored across calls if you keep the
-    same instance; reset for fresh sessions."""
+    """Multi-turn state. Stored across calls if you keep the same
+    instance; reset for fresh sessions."""
     active_topic_node_ids: list[int] = field(default_factory=list)
     entity_register: dict[str, int] = field(default_factory=dict)  # surface→node_id
     last_intent: str = ""
@@ -148,6 +164,11 @@ class DiscourseState:
     # 'tell me more' calls produce novel content. Key:
     # (subject_node_id, relation_id, target_node_id).
     emitted_facts: set[tuple[int, int, int]] = field(default_factory=set)
+    # Rolling history, oldest-first, capped at history_limit. Each
+    # TurnRecord is what the Compute Module sees as the conversation
+    # so far when generating a response.
+    history: list[TurnRecord] = field(default_factory=list)
+    history_limit: int = 16
 
     def update(
         self, result: InferenceResult, *,
@@ -174,6 +195,13 @@ class DiscourseState:
             for i, tok in enumerate(result.tokens):
                 if i in result.anchors:
                     self.entity_register[tok.surface] = result.anchors[i]
+
+    def append_turn(self, record: TurnRecord) -> None:
+        """Append a turn record and trim the history to history_limit."""
+        self.history.append(record)
+        if len(self.history) > self.history_limit:
+            # Keep the most recent N — older turns drop off.
+            del self.history[: len(self.history) - self.history_limit]
 
 
 # --- Response container -------------------------------------------------
@@ -497,6 +525,9 @@ def respond(
         anchor_id = state.active_topic_node_ids[0]
         pronoun_resolved = True
 
+    # Track question_type for both the answer call and the TurnRecord.
+    qtype = ""
+
     # Elaboration short-circuit: 'tell me more', 'continue', 'and?' —
     # the rule-based intent classifier sees these as instruction or
     # social, but the conversational meaning is "give me another fact
@@ -548,6 +579,8 @@ def respond(
     state.update(result, anchor_id=anchor_id, backbone=backbone)
 
     # Confidence audit — flag if low. Compute Module (§4) fires here.
+    # The conditioning carries discourse history (excluding this turn)
+    # so the NN sees the conversation context.
     needs_compute = conf < confidence_floor
     compute_used = False
     if needs_compute and compute is not None:
@@ -556,11 +589,29 @@ def respond(
             primary_anchor_id=anchor_id,
             deterministic_answer=text,
             deterministic_confidence=conf,
+            history=state.history,
         )
         override = compute.complete(conditioning)
         if override is not None:
             text = override
             compute_used = True
+
+    # Append this turn to history AFTER the Compute Module has run so the
+    # next turn's conditioning includes the final response.
+    anchor_lemma = (
+        _best_lemma(backbone, anchor_id) if anchor_id is not None else ""
+    )
+    state.append_turn(TurnRecord(
+        turn_index=state.turn_count,
+        prompt=prompt,
+        response=text,
+        intent=result.intent,
+        question_type=qtype,
+        primary_anchor_id=anchor_id,
+        primary_anchor_lemma=anchor_lemma,
+        pronoun_resolved=pronoun_resolved,
+        confidence=conf,
+    ))
 
     return Response(
         text=text,
