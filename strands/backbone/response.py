@@ -69,6 +69,53 @@ def _is_elaboration(prompt: str) -> bool:
     return any(s.startswith(p) for p in _ELABORATION_PHRASES)
 
 
+# Question-type classification. Each pattern routes the question to a
+# relation walker that pulls a more specific answer than the default
+# gloss-based definition.
+_QUESTION_TYPES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("location",    ("where ",)),
+    ("composition", ("made of", "made out of", "consist of", "what's in",
+                     "what is in")),
+    ("purpose",     ("used for", "what is .* for", " purpose of")),
+    ("ability",     ("what does", "what do", "what can", "how does",
+                     "how do", "able to", "capable of")),
+    ("cause",       ("what causes", "why does", "why do",
+                     "what makes")),
+    ("effect",      ("what does .* cause", "what happens because")),
+)
+
+
+def _classify_question_type(prompt: str) -> str:
+    """Detect the wh-pattern in a question and return one of:
+    'definition' (default, gloss-based) | 'location' | 'composition'
+    | 'purpose' | 'ability' | 'cause' | 'effect'."""
+    s = prompt.strip().lower().rstrip(".?!")
+    for qtype, patterns in _QUESTION_TYPES:
+        for pat in patterns:
+            if pat.startswith("what is .*") or pat.startswith("what does .*"):
+                # Tiny regex-ish: prefix and suffix must both occur,
+                # in that order. Avoids importing re again per call.
+                head, _, tail = pat.partition(".*")
+                head, tail = head.strip(), tail.strip()
+                hi = s.find(head)
+                if hi != -1 and tail and s.find(tail, hi + len(head)) != -1:
+                    return qtype
+            elif pat in s:
+                return qtype
+    return "definition"
+
+
+# Question-type → (relation, sentence template).
+_QUESTION_TYPE_RELATIONS: dict[str, tuple[Rel, str]] = {
+    "location":    (Rel.AT_LOCATION,  "{subject} can be found at {target}"),
+    "composition": (Rel.MADE_OF,      "{subject} is made of {target}"),
+    "purpose":     (Rel.USED_FOR,     "{subject} is used for {target}"),
+    "ability":     (Rel.CAPABLE_OF,   "{subject} is capable of {target}"),
+    "cause":       (Rel.CAUSED_BY,    "{subject} is caused by {target}"),
+    "effect":      (Rel.CAUSES,       "{subject} causes {target}"),
+}
+
+
 # Relation walk for topic elaboration, in priority order. Each entry is
 # (relation, sentence template) where {subject} and {target} are filled
 # with backbone lemmas. Templates are kept simple — surface smoothing
@@ -217,14 +264,110 @@ def _article(word: str) -> str:
 # --- Content selection per intent --------------------------------------
 
 
+def _answer_by_relation(
+    backbone: Backbone, anchor_id: int, rel: Rel, template: str,
+    *, top_k: int = 2, subject_override: str | None = None,
+) -> tuple[str, float] | None:
+    """Walk a specific relation from the anchor and return up to
+    ``top_k`` highest-weight targets joined into a single sentence,
+    or ``None`` if no edges exist. ``subject_override`` lets the caller
+    keep the user's surface word ('house') rather than the matched
+    node's primary lemma ('home')."""
+    edges = backbone.edges_with_relation(anchor_id, rel)
+    if edges.size == 0:
+        return None
+    subject = subject_override or _best_lemma(backbone, anchor_id) or "it"
+    order = np.argsort(-edges["weight"].astype(np.int64))
+    targets: list[str] = []
+    for idx in order:
+        target_id = int(edges[int(idx)]["target_id"])
+        target_lemma = _best_lemma(backbone, target_id)
+        if not target_lemma or target_lemma == subject:
+            continue
+        if target_lemma in targets:
+            continue
+        targets.append(target_lemma)
+        if len(targets) >= top_k:
+            break
+    if not targets:
+        return None
+    if len(targets) == 1:
+        joined = targets[0]
+    else:
+        joined = " and ".join(targets)
+    sentence = template.format(subject=subject, target=joined)
+    return sentence[0].upper() + sentence[1:] + ".", 0.85
+
+
+def _sibling_sense_with_relation(
+    backbone: Backbone, anchor_id: int, rel: Rel,
+) -> int | None:
+    """When the chosen anchor has no edges of ``rel``, the WSD may
+    have picked the wrong sense for a typed question. Search every
+    sense that shares ANY lemma with the anchor and return the one
+    with the most edges of the requested relation, if any."""
+    lemmas = backbone.lemmas_for(anchor_id)
+    if not lemmas:
+        return None
+    seen: set[int] = {anchor_id}
+    best: tuple[int, int] | None = None  # (count, node_id)
+    for lemma in lemmas:
+        for nid in backbone.nodes_for_lemma(lemma):
+            if nid in seen:
+                continue
+            seen.add(nid)
+            edges = backbone.edges_with_relation(nid, rel)
+            if edges.size == 0:
+                continue
+            count = int(edges.size)
+            if best is None or count > best[0]:
+                best = (count, nid)
+    return best[1] if best is not None else None
+
+
 def _answer_question(
     backbone: Backbone, anchor_id: int,
+    *, question_type: str = "definition",
+    user_surface: str | None = None,
 ) -> tuple[str, float]:
-    """For a question, prefer the gloss; fall back to a hypernym
-    sentence; final fallback is just the lemmas list. When a gloss is
-    very short, append a hypernym clause so the answer carries more
-    signal."""
-    subject = _best_lemma(backbone, anchor_id) or "it"
+    """Route a question to a relation-specific answerer based on the
+    detected wh-pattern. Definition (default) falls back to the gloss;
+    typed questions (where/what does X do/etc.) walk a specific edge
+    type and return that answer when available, else fall back to the
+    definition.
+
+    ``user_surface`` is the word the user actually typed. When supplied
+    and singular-canonical, it's used as the subject so we don't render
+    'Home is made of wood' for someone who asked about 'house'."""
+    subject = (
+        user_surface or _best_lemma(backbone, anchor_id) or "it"
+    )
+
+    # Typed questions try the specific relation first.
+    if question_type != "definition":
+        rel_template = _QUESTION_TYPE_RELATIONS.get(question_type)
+        if rel_template is not None:
+            rel, template = rel_template
+            answer = _answer_by_relation(
+                backbone, anchor_id, rel, template,
+                subject_override=subject,
+            )
+            if answer is not None:
+                return answer
+            # WSD may have picked a sense without this relation. Try
+            # a sibling sense of the same lemma — typed questions are
+            # more confident about WHAT they're asking than which sense.
+            sibling = _sibling_sense_with_relation(backbone, anchor_id, rel)
+            if sibling is not None:
+                answer = _answer_by_relation(
+                    backbone, sibling, rel, template,
+                    subject_override=subject,
+                )
+                if answer is not None:
+                    # Slightly lower confidence — we crossed a sense.
+                    return answer[0], max(0.6, answer[1] - 0.1)
+
+    # Definition path (and fallback for typed questions): use gloss.
     gloss = backbone.gloss_for(anchor_id)
     if gloss:
         first = gloss[0].lower() + gloss[1:] if len(gloss) > 1 else gloss
@@ -371,7 +514,21 @@ def respond(
         if anchor_id is None:
             text, conf = "I don't know what you're asking about.", 0.2
         else:
-            text, conf = _answer_question(backbone, anchor_id)
+            qtype = _classify_question_type(prompt)
+            # Find the surface the user typed for the chosen anchor,
+            # so the answer reads with their word ('house') rather than
+            # the node's primary lemma ('home').
+            user_surface = next(
+                (
+                    t.surface for i, t in enumerate(result.tokens)
+                    if result.anchors.get(i) == anchor_id
+                ),
+                None,
+            )
+            text, conf = _answer_question(
+                backbone, anchor_id,
+                question_type=qtype, user_surface=user_surface,
+            )
     elif result.intent == "instruction":
         text, conf = _instruction_acknowledgment(backbone, anchor_id)
     elif result.intent == "social":
