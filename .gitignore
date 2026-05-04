@@ -15,3 +15,5 @@ venv/
 # Layered build cache (deterministic, regeneratable from sources)
 strands/build/_cache/
 /strands/data/backbone/
+# Captured training data + neural Compute Module checkpoints
+/strands/data/compute/
