@@ -21,6 +21,7 @@ anchors, the discourse-state delta (M3 stub), and a confidence score.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from strands.backbone.compute_module import (
@@ -30,6 +31,19 @@ from strands.backbone.compute_module import (
 from strands.backbone.inference import InferenceResult, infer
 from strands.backbone.loader import Backbone
 from strands.backbone.schema import Rel
+
+
+# Pronouns that resolve against the rolling DiscourseState topic.
+# "it"/"they"/"them" are stop-words and get filtered before tokenization,
+# so we look for them in the raw prompt instead.
+_PRONOUNS = frozenset({
+    "it", "they", "them", "this", "that", "these", "those",
+})
+_WORD_RE = re.compile(r"[a-z']+")
+
+
+def _prompt_has_pronoun(prompt: str) -> bool:
+    return any(w in _PRONOUNS for w in _WORD_RE.findall(prompt.lower()))
 
 
 # --- Single-turn discourse state stub (M3) ------------------------------
@@ -44,21 +58,31 @@ class DiscourseState:
     last_intent: str = ""
     turn_count: int = 0
 
-    def update(self, result: InferenceResult, *, anchor_id: int | None) -> None:
+    def update(
+        self, result: InferenceResult, *,
+        anchor_id: int | None, backbone: Backbone | None = None,
+    ) -> None:
         self.turn_count += 1
         self.last_intent = result.intent
-        # Top 5 activated nodes become the rolling topic.
-        top = sorted(
-            result.activations.items(), key=lambda x: -x[1],
-        )[:5]
-        self.active_topic_node_ids = [n for n, _ in top]
+        # Refresh the rolling topic only when this turn introduces a new
+        # ENTITY-type anchor — a noun-phrase the conversation is "about".
+        # Verb-anchored turns ("Tell me more.", "Show it to me.") leave
+        # the previous topic intact so follow-up pronouns still resolve.
+        is_entity_anchor = (
+            anchor_id is not None
+            and backbone is not None
+            and bool(int(backbone.nodes[anchor_id]["concept_type"]) & 0x01)
+        )
+        if is_entity_anchor:
+            top = sorted(
+                result.activations.items(), key=lambda x: -x[1],
+            )[:5]
+            ordered = [anchor_id] + [n for n, _ in top if n != anchor_id]
+            self.active_topic_node_ids = ordered[:5]
         if anchor_id is not None:
-            for tok in result.tokens:
-                if (idx := next(
-                    (i for i, t in enumerate(result.tokens)
-                     if t.surface == tok.surface), None,
-                )) is not None and idx in result.anchors:
-                    self.entity_register[tok.surface] = result.anchors[idx]
+            for i, tok in enumerate(result.tokens):
+                if i in result.anchors:
+                    self.entity_register[tok.surface] = result.anchors[i]
 
 
 # --- Response container -------------------------------------------------
@@ -77,6 +101,9 @@ class Response:
     # because confidence was high enough, or because the Compute Module
     # deferred by returning None).
     compute_module_used: bool = False
+    # True when the primary anchor came from pronoun resolution against
+    # the discourse state rather than direct lemma lookup.
+    pronoun_resolved: bool = False
 
 
 # --- Helpers ------------------------------------------------------------
@@ -240,8 +267,19 @@ def respond(
     # Step 1: prompt-to-backbone inference (M2).
     result = infer(backbone, prompt)
 
-    # Step 2: pick primary anchor.
+    # Step 2: pick primary anchor. If the prompt is a pronoun reference
+    # ("What is it?", "Tell me about them") and the discourse state
+    # has an active topic, use that topic as the anchor — this is the
+    # multi-turn coreference path (BDRM §3.3).
     anchor_id = _primary_anchor(backbone, result)
+    pronoun_resolved = False
+    if (
+        anchor_id is None
+        and state.active_topic_node_ids
+        and _prompt_has_pronoun(prompt)
+    ):
+        anchor_id = state.active_topic_node_ids[0]
+        pronoun_resolved = True
 
     # Step 3 + 4: content selection + surface realization based on intent.
     if result.intent == "question_answering":
@@ -258,8 +296,14 @@ def respond(
     else:
         text, conf = "Could you rephrase that?", 0.3
 
+    # Pronoun-resolved anchors are inherently more uncertain than direct
+    # lemma lookups — the resolution is a heuristic. Discount confidence
+    # slightly so the Compute Module floor catches edge cases.
+    if pronoun_resolved:
+        conf = max(0.0, conf - 0.1)
+
     # Step 5: discourse state update.
-    state.update(result, anchor_id=anchor_id)
+    state.update(result, anchor_id=anchor_id, backbone=backbone)
 
     # Confidence audit — flag if low. Compute Module (§4) fires here.
     needs_compute = conf < confidence_floor
@@ -284,4 +328,5 @@ def respond(
         needs_compute_module=needs_compute,
         state=state,
         compute_module_used=compute_used,
+        pronoun_resolved=pronoun_resolved,
     )
