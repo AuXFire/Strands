@@ -48,6 +48,38 @@ class TrainingConfig:
     seed: int = 0
     log_every: int = 10
     grad_clip: float = 1.0
+    # Hardware. 'auto' picks cuda when available (which on a ROCm
+    # PyTorch build presents the AMD GPU as cuda), else cpu.
+    device: str = "auto"
+    # Early stopping: stop training if val loss hasn't improved in
+    # ``patience`` consecutive evaluations. 0 disables.
+    patience: int = 5
+
+
+def resolve_device(spec: str) -> torch.device:
+    """Resolve 'auto' to cuda-when-available else cpu. ROCm builds of
+    PyTorch present AMD GPUs through the cuda namespace, so the same
+    string works for both NVIDIA and AMD."""
+    if spec == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(spec)
+
+
+def describe_device(device: torch.device) -> str:
+    """One-line description of the device for logging."""
+    if device.type == "cuda":
+        name = torch.cuda.get_device_name(device)
+        total_gb = (
+            torch.cuda.get_device_properties(device).total_memory / 1e9
+        )
+        # ROCm builds report the AMD card here; the API is identical.
+        backend = (
+            "ROCm" if getattr(torch.version, "hip", None) is not None
+            else "CUDA"
+        )
+        return f"{name} ({backend}, {total_gb:.1f} GB)"
+    threads = torch.get_num_threads()
+    return f"CPU ({threads} threads)"
 
 
 def lr_at_step(step: int, base_lr: float, warmup: int, total: int) -> float:
@@ -60,10 +92,16 @@ def lr_at_step(step: int, base_lr: float, warmup: int, total: int) -> float:
 
 def compute_loss(
     model: TinyTransformer, batch: dict[str, torch.Tensor],
+    *, device: torch.device | None = None,
 ) -> torch.Tensor:
-    """Standard causal-LM loss masked to target tokens only."""
+    """Standard causal-LM loss masked to target tokens only.
+    ``device`` (if supplied) moves the batch tensors before the
+    forward pass."""
     input_ids = batch["input_ids"]
     labels = batch["labels"]
+    if device is not None:
+        input_ids = input_ids.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
     logits = model(input_ids)  # (B, T, V)
     # Shift: predict labels[i+1] from input[i].
     shift_logits = logits[:, :-1, :].contiguous()
@@ -78,13 +116,13 @@ def compute_loss(
 @torch.no_grad()
 def evaluate(
     model: TinyTransformer, val_records: list[TrainingRecord], *,
-    batch_size: int,
+    batch_size: int, device: torch.device | None = None,
 ) -> float:
     model.eval()
     total_loss = 0.0
     n_batches = 0
     for batch in iterate_batches(val_records, batch_size=batch_size, shuffle=False):
-        loss = compute_loss(model, batch)
+        loss = compute_loss(model, batch, device=device)
         total_loss += float(loss)
         n_batches += 1
     model.train()
@@ -95,11 +133,14 @@ def evaluate(
 def sample_generation(
     model: TinyTransformer, context: str, *,
     max_new_tokens: int = 96, temperature: float = 0.0,
+    device: torch.device | None = None,
 ) -> str:
     """Greedy decode from a context string. Returns the generated
     target portion (everything after [SEP])."""
     model.eval()
     ids = torch.tensor([encode_context(context)], dtype=torch.long)
+    if device is not None:
+        ids = ids.to(device)
     out = model.generate(
         ids, max_new_tokens=max_new_tokens, eos_id=EOS_ID,
         temperature=temperature,
@@ -111,7 +152,11 @@ def sample_generation(
 
 def train(cfg: TrainingConfig) -> dict:
     """Run training loop. Returns a dict with final metrics + best
-    checkpoint path."""
+    checkpoint path. Honors cfg.device (cuda/rocm-as-cuda/cpu) and
+    cfg.patience (early stopping)."""
+    device = resolve_device(cfg.device)
+    print(f"Device: {describe_device(device)}")
+
     print(f"Loading dataset from {cfg.data_path} …")
     ds = ConditioningDataset(cfg.data_path, max_seq_len=cfg.model.max_seq_len)
     train_records, val_records = split(
@@ -123,7 +168,9 @@ def train(cfg: TrainingConfig) -> dict:
 
     print(f"Building model: {cfg.model}")
     torch.manual_seed(cfg.seed)
-    model = TinyTransformer(cfg.model)
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(cfg.seed)
+    model = TinyTransformer(cfg.model).to(device)
     print(f"  {model.num_parameters():,} parameters")
 
     optim = torch.optim.AdamW(
@@ -133,6 +180,8 @@ def train(cfg: TrainingConfig) -> dict:
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
     best_val = float("inf")
     best_path = cfg.out_dir / "best.pt"
+    evals_since_improvement = 0
+    early_stopped = False
 
     sample_contexts = [
         "[PROMPT] What is a cat? [INTENT] question_answering [QTYPE] definition [SEP]",
@@ -153,7 +202,7 @@ def train(cfg: TrainingConfig) -> dict:
                 step, cfg.lr, cfg.warmup_steps, cfg.max_steps,
             )
         optim.zero_grad(set_to_none=True)
-        loss = compute_loss(model, batch)
+        loss = compute_loss(model, batch, device=device)
         loss.backward()
         if cfg.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
@@ -172,10 +221,13 @@ def train(cfg: TrainingConfig) -> dict:
 
         val_loss: float | None = None
         if (step + 1) % cfg.eval_every == 0 or step + 1 == cfg.max_steps:
-            val_loss = evaluate(model, val_records, batch_size=cfg.batch_size)
+            val_loss = evaluate(
+                model, val_records, batch_size=cfg.batch_size, device=device,
+            )
             print(f"  >> val_loss={val_loss:.3f}")
             if val_loss < best_val:
                 best_val = val_loss
+                evals_since_improvement = 0
                 torch.save({
                     "model": model.state_dict(),
                     "config": cfg.model.__dict__,
@@ -183,25 +235,35 @@ def train(cfg: TrainingConfig) -> dict:
                     "val_loss": val_loss,
                 }, best_path)
                 print(f"  >> saved checkpoint to {best_path}")
+            else:
+                evals_since_improvement += 1
+                if cfg.patience > 0 and evals_since_improvement >= cfg.patience:
+                    print(
+                        f"  >> early stop: no val improvement for "
+                        f"{cfg.patience} evals (best={best_val:.3f})"
+                    )
+                    early_stopped = True
 
         if (step + 1) % cfg.sample_every == 0 or step + 1 == cfg.max_steps:
             print("  >> samples:")
             for ctx in sample_contexts:
-                # context already ends with [SEP]; strip the trailing
-                # marker so encode_context re-adds it.
                 ctx_for_decode = ctx.removesuffix(" [SEP]")
                 gen = sample_generation(
-                    model, ctx_for_decode, max_new_tokens=80, temperature=0.0,
+                    model, ctx_for_decode, max_new_tokens=80,
+                    temperature=0.0, device=device,
                 )
                 print(f"     {ctx_for_decode[:60]}…")
                 print(f"     → {gen!r}")
 
         history.append((step + 1, loss_val, val_loss))
+        if early_stopped:
+            break
 
     elapsed = time.time() - t0
+    actual_steps = len(history)
     print(
-        f"Done. {cfg.max_steps} steps in {elapsed:.1f}s "
-        f"({cfg.max_steps / elapsed:.2f} step/s) | "
+        f"Done. {actual_steps} steps in {elapsed:.1f}s "
+        f"({actual_steps / max(elapsed, 1e-9):.2f} step/s) | "
         f"best val_loss={best_val:.3f}"
     )
     return {
@@ -209,6 +271,9 @@ def train(cfg: TrainingConfig) -> dict:
         "best_checkpoint": str(best_path),
         "history": history,
         "elapsed_s": elapsed,
+        "early_stopped": early_stopped,
+        "actual_steps": actual_steps,
+        "device": str(device),
     }
 
 

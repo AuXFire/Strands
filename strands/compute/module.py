@@ -46,8 +46,13 @@ class NeuralComputeModule:
         temperature: float = 0.0,
         top_k: int | None = None,
         defer_when_empty: bool = True,
+        device: str | torch.device | None = None,
     ) -> None:
-        self.model = model
+        self.device = (
+            torch.device(device) if device is not None
+            else next(model.parameters()).device
+        )
+        self.model = model.to(self.device)
         self.model.eval()
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
@@ -62,8 +67,12 @@ class NeuralComputeModule:
         max_new_tokens: int = 128,
         temperature: float = 0.0,
         top_k: int | None = None,
+        device: str | torch.device | None = None,
     ) -> "NeuralComputeModule":
-        ckpt = torch.load(path, map_location="cpu", weights_only=True)
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = torch.device(device)
+        ckpt = torch.load(path, map_location=device, weights_only=True)
         cfg = ModelConfig(**ckpt["config"])
         model = TinyTransformer(cfg)
         model.load_state_dict(ckpt["model"])
@@ -72,12 +81,15 @@ class NeuralComputeModule:
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            device=device,
         )
 
     @torch.no_grad()
     def complete(self, conditioning: Conditioning) -> str | None:
         ctx = format_context(conditioning)
-        ids = torch.tensor([encode_context(ctx)], dtype=torch.long)
+        ids = torch.tensor(
+            [encode_context(ctx)], dtype=torch.long, device=self.device,
+        )
         if ids.shape[1] >= self.model.cfg.max_seq_len:
             # Context already at limit; nothing to generate.
             return None
