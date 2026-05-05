@@ -13,7 +13,7 @@ from strands.backbone.schema import Rel
 from strands.realization import (
     FillerValue,
     Register,
-    SEED_TEMPLATES,
+    seed_templates,
     Segment,
     SlotKind,
     SlotSpec,
@@ -128,7 +128,7 @@ def test_store_rejects_duplicate_id():
 
 def test_default_store_loads_all_seeds():
     store = build_default_store()
-    assert len(store) == len(SEED_TEMPLATES)
+    assert len(store) == len(seed_templates())
 
 
 def test_default_store_has_template_per_response_shape():

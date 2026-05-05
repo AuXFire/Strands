@@ -34,10 +34,18 @@ from strands.backbone.compute_module import (
 from strands.backbone.speech_act import classify_speech_act
 from strands.backbone.yesno import answer_yesno, is_yesno_question
 from strands.realization import (
+    ActType,
+    CommunicativeAct,
+    ConceptualLeaf,
     FillerValue,
+    RealizedResponse,
+    ResponseStructure,
     TemplateStore,
     build_default_store,
+    realize,
     render,
+    sequence,
+    single_leaf,
 )
 
 
@@ -352,17 +360,14 @@ def _article(word: str) -> str:
 # --- Content selection per intent --------------------------------------
 
 
-def _answer_by_relation(
+def _plan_answer_by_relation(
     backbone: Backbone, anchor_id: int, rel: Rel,
     *, top_k: int = 2, subject_override: str | None = None,
     shape: str = "",
-) -> tuple[str, float] | None:
-    """Walk a specific relation from the anchor and render up to
-    ``top_k`` highest-weight targets via the realization layer.
-    Returns None if no edges exist or no template matches.
-    ``subject_override`` keeps the user's surface word; ``shape``
-    selects a specific response template (e.g. 'answer_location').
-    """
+) -> ResponseStructure | None:
+    """Walk a specific relation from the anchor and produce a single-
+    leaf ASSERT structure pointing at the matching template. Returns
+    None if no edges exist or no template matches."""
     edges = backbone.edges_with_relation(anchor_id, rel)
     if edges.size == 0:
         return None
@@ -381,17 +386,28 @@ def _answer_by_relation(
             break
     if not targets:
         return None
-    template = (
-        _store().best(shape=shape) if shape else None
-    ) or _store().best(relation_type=int(rel))
-    if template is None:
+    # Resolve which template the leaf should target. Prefer the
+    # response_shape; fall back to relation-only.
+    if shape and _store().best(shape=shape) is not None:
+        template_shape = shape
+        template_relation = 0
+    elif _store().best(relation_type=int(rel)) is not None:
+        template_shape = ""
+        template_relation = int(rel)
+    else:
         return None
-    fillers = {
-        "subject": FillerValue(subject),  # template auto-caps via SlotSpec
-        "target": targets,                # LEMMA_LIST handles the join
-    }
-    rendered = render(template, fillers)
-    return rendered.finalize(), 0.85
+    return single_leaf(
+        ActType.ASSERT,
+        template_shape=template_shape,
+        template_relation=template_relation,
+        fillers={
+            "subject": FillerValue(subject),
+            "target": targets,  # LEMMA_LIST handles the join
+        },
+        confidence=0.85,
+        intent="question_answering",
+        backbone_node_ids=(anchor_id,),
+    )
 
 
 def _sibling_sense_with_relation(
@@ -420,20 +436,14 @@ def _sibling_sense_with_relation(
     return best[1] if best is not None else None
 
 
-def _answer_question(
+def _plan_question(
     backbone: Backbone, anchor_id: int,
     *, question_type: str = "definition",
     user_surface: str | None = None,
-) -> tuple[str, float]:
-    """Route a question to a relation-specific answerer based on the
-    detected wh-pattern. Definition (default) falls back to the gloss;
-    typed questions (where/what does X do/etc.) walk a specific edge
-    type and return that answer when available, else fall back to the
-    definition.
-
-    ``user_surface`` is the word the user actually typed. When supplied
-    and singular-canonical, it's used as the subject so we don't render
-    'Home is made of wood' for someone who asked about 'house'."""
+) -> ResponseStructure:
+    """Plan a response structure for a wh-question. Definition (default)
+    falls back to the gloss; typed questions walk a specific relation
+    and produce an ASSERT structure citing the matching template."""
     subject = (
         user_surface or _best_lemma(backbone, anchor_id) or "it"
     )
@@ -443,93 +453,112 @@ def _answer_question(
         rel_shape = _QUESTION_TYPE_RELATIONS.get(question_type)
         if rel_shape is not None:
             rel, shape = rel_shape
-            answer = _answer_by_relation(
+            structure = _plan_answer_by_relation(
                 backbone, anchor_id, rel, shape=shape,
                 subject_override=subject,
             )
-            if answer is not None:
-                return answer
+            if structure is not None:
+                return structure
             # WSD may have picked a sense without this relation. Try
-            # a sibling sense of the same lemma — typed questions are
-            # more confident about WHAT they're asking than which sense.
+            # a sibling sense of the same lemma.
             sibling = _sibling_sense_with_relation(backbone, anchor_id, rel)
             if sibling is not None:
-                answer = _answer_by_relation(
+                structure = _plan_answer_by_relation(
                     backbone, sibling, rel, shape=shape,
                     subject_override=subject,
                 )
-                if answer is not None:
+                if structure is not None:
                     # Slightly lower confidence — we crossed a sense.
-                    return answer[0], max(0.6, answer[1] - 0.1)
+                    new_conf = max(0.6, structure.confidence - 0.1)
+                    structure.confidence = new_conf
+                    structure.root.confidence = new_conf
+                    if structure.root.leaf is not None:
+                        structure.root.leaf.confidence = new_conf
+                    return structure
 
-    # Definition path (and fallback for typed questions): use gloss.
+    # Definition path: gloss-backed.
     gloss = backbone.gloss_for(anchor_id)
     if gloss:
-        # Glosses under ~40 chars are often terse — fold in the hypernym
-        # so the answer still reads as substantive.
         if len(gloss) < 40:
             hyp = _hypernym_target(backbone, anchor_id)
             if hyp:
                 target_lemma = _best_lemma(backbone, hyp[0])
                 if target_lemma and target_lemma != subject:
-                    text, _ = _render_shape(
-                        "definition_with_hypernym",
-                        {
+                    return single_leaf(
+                        ActType.ASSERT,
+                        template_shape="definition_with_hypernym",
+                        fillers={
                             "subject": FillerValue(subject),
                             "gloss": FillerValue(gloss),
                             "hypernym": FillerValue(target_lemma),
                         },
+                        confidence=0.9,
+                        intent="question_answering",
+                        backbone_node_ids=(anchor_id, hyp[0]),
                     )
-                    return text, 0.9
-        text, _ = _render_shape(
-            "definition",
-            {
+        return single_leaf(
+            ActType.ASSERT,
+            template_shape="definition",
+            fillers={
                 "subject": FillerValue(subject),
                 "gloss": FillerValue(gloss),
             },
+            confidence=0.9,
+            intent="question_answering",
+            backbone_node_ids=(anchor_id,),
         )
-        return text, 0.9
 
     hyp = _hypernym_target(backbone, anchor_id)
     if hyp:
         target_id, weight = hyp
         target_lemma = _best_lemma(backbone, target_id) or "something"
         confidence = min(0.85, weight / 0xFFFF + 0.4)
-        text, _ = _render_shape(
-            "definition_fallback",
-            {
+        return single_leaf(
+            ActType.ASSERT,
+            template_shape="definition_fallback",
+            fillers={
                 "subject": FillerValue(subject),
                 "hypernym": FillerValue(target_lemma),
             },
+            confidence=confidence,
+            intent="question_answering",
+            backbone_node_ids=(anchor_id, target_id),
         )
-        return text, confidence
 
-    # Nothing useful — punt to Compute Module.
-    text, _ = _render_shape(
-        "definition_unknown",
-        {"subject": FillerValue(subject)},
+    # Nothing useful — DEFER act flagged for compute would normally
+    # land here, but we keep emitting the deterministic 'definition_
+    # unknown' template to preserve current behavior. B3 will switch
+    # to a compute-flagged leaf when the compute module is wired in.
+    return single_leaf(
+        ActType.DEFER,
+        template_shape="definition_unknown",
+        fillers={"subject": FillerValue(subject)},
+        confidence=0.2,
+        intent="question_answering",
+        backbone_node_ids=(anchor_id,),
     )
-    return text, 0.2
 
 
-def _elaborate_topic(
+def _plan_elaborate(
     backbone: Backbone, anchor_id: int,
     emitted: set[tuple[int, int, int]],
-) -> tuple[str, float]:
-    """Walk relations from the anchor in priority order, returning the
-    first highest-weight target that hasn't been emitted yet. Records
-    the chosen fact in ``emitted`` so later elaboration calls produce
-    novel content."""
+) -> ResponseStructure:
+    """Plan an ELABORATE structure: walk relations from the anchor in
+    priority order; the first highest-weight target not in ``emitted``
+    becomes a single-leaf structure tagged for the matching relation
+    template. When all relations are exhausted, returns an
+    ``elaborate_exhausted`` leaf at low confidence."""
     subject = _best_lemma(backbone, anchor_id) or "it"
     for rel in _ELABORATION_RELATIONS:
         edges = backbone.edges_with_relation(anchor_id, rel)
         if edges.size == 0:
             continue
-        template = (
+        # Confirm a template exists for this (shape, relation) pair.
+        if (
             _store().best(shape="elaborate", relation_type=int(rel))
-            or _store().best(relation_type=int(rel))
-        )
-        if template is None:
+            is None
+            and _store().best(relation_type=int(rel)) is None
+        ):
             continue
         order = np.argsort(-edges["weight"].astype(np.int64))
         for idx in order:
@@ -541,80 +570,106 @@ def _elaborate_topic(
             if not target_lemma or target_lemma == subject:
                 continue
             emitted.add(key)
-            rendered = render(template, {
-                "subject": FillerValue(subject),
-                "target": FillerValue(target_lemma),
-            })
-            return rendered.finalize(), 0.8
-    # Exhausted — nothing new to say.
-    text, _ = _render_shape(
-        "elaborate_exhausted",
-        {"subject": FillerValue(subject)},
+            return single_leaf(
+                ActType.ELABORATE,
+                template_shape="elaborate",
+                template_relation=int(rel),
+                fillers={
+                    "subject": FillerValue(subject),
+                    "target": FillerValue(target_lemma),
+                },
+                confidence=0.8,
+                intent="question_answering",
+                backbone_node_ids=(anchor_id, target_id),
+            )
+    return single_leaf(
+        ActType.ELABORATE,
+        template_shape="elaborate_exhausted",
+        fillers={"subject": FillerValue(subject)},
+        confidence=0.4,
+        intent="question_answering",
+        backbone_node_ids=(anchor_id,),
     )
-    return text, 0.4
 
 
-def _inform_acknowledgment(
+def _plan_inform_ack(
     backbone: Backbone, anchor_id: int | None,
-) -> tuple[str, float]:
+) -> ResponseStructure:
     if anchor_id is None:
-        return _render_shape("inform_bare", {}, fallback="Got it.")[0], 0.6
+        return single_leaf(
+            ActType.ACKNOWLEDGE,
+            template_shape="inform_bare",
+            confidence=0.6,
+            intent="inform",
+        )
     subject = _best_lemma(backbone, anchor_id) or "that"
-    text, _ = _render_shape(
-        "inform_generic_ack",
-        {"subject": FillerValue(subject)},
-        fallback=f"Got it — noted about {subject}.",
+    return single_leaf(
+        ActType.ACKNOWLEDGE,
+        template_shape="inform_generic_ack",
+        fillers={"subject": FillerValue(subject)},
+        confidence=0.7,
+        intent="inform",
+        backbone_node_ids=(anchor_id,),
     )
-    return text, 0.7
 
 
-def _inform_acknowledgment_with_belief(
-    belief: Belief,
-) -> tuple[str, float]:
+def _plan_belief_ack(belief: Belief) -> ResponseStructure:
     """When inform-turn belief extraction succeeds, the acknowledgement
     echoes the user's own words rather than a re-templated form — this
     avoids subject-verb agreement bugs ('cats is cute') and confirms
-    the exact wording we registered. Higher confidence than the generic
-    'Got it' since we actually structured the fact."""
+    the exact wording we registered."""
     raw = belief.raw_prompt.rstrip(".!?")
-    text, _ = _render_shape(
-        "inform_belief_ack",
-        {"raw": FillerValue(raw, source="literal")},
-        fallback=f"Got it — noted that {raw}.",
+    return single_leaf(
+        ActType.ACKNOWLEDGE,
+        template_shape="inform_belief_ack",
+        fillers={"raw": FillerValue(raw, source="literal")},
+        confidence=0.85,
+        intent="inform",
     )
-    return text, 0.85
 
 
-def _instruction_acknowledgment(
+def _plan_instruction_ack(
     backbone: Backbone, anchor_id: int | None,
-) -> tuple[str, float]:
+) -> ResponseStructure:
     if anchor_id is None:
-        return _render_shape("instruct_bare", {}, fallback="OK.")[0], 0.5
+        return single_leaf(
+            ActType.INSTRUCT_RESPONSE,
+            template_shape="instruct_bare",
+            confidence=0.5,
+            intent="instruction",
+        )
     subject = _best_lemma(backbone, anchor_id) or "the request"
-    text, _ = _render_shape(
-        "instruct_with_subject",
-        {"subject": FillerValue(subject)},
-        fallback=f"OK — I'll work on {subject}.",
+    return single_leaf(
+        ActType.INSTRUCT_RESPONSE,
+        template_shape="instruct_with_subject",
+        fillers={"subject": FillerValue(subject)},
+        confidence=0.6,
+        intent="instruction",
+        backbone_node_ids=(anchor_id,),
     )
-    return text, 0.6
 
 
-_SOCIAL_SHAPES: tuple[tuple[tuple[str, ...], str, float], ...] = (
-    (("hi", "hello", "hey"), "social_greeting", 0.95),
-    (("thank",), "social_thanks", 0.95),
-    (("sorry",), "social_apology", 0.9),
-    (("bye",), "social_farewell", 0.95),
+_SOCIAL_SHAPES: tuple[tuple[tuple[str, ...], str, ActType, float], ...] = (
+    (("hi", "hello", "hey"), "social_greeting", ActType.GREET, 0.95),
+    (("thank",), "social_thanks", ActType.THANK_RESPONSE, 0.95),
+    (("sorry",), "social_apology", ActType.APOLOGIZE_RESPONSE, 0.9),
+    (("bye",), "social_farewell", ActType.FAREWELL, 0.95),
 )
 
 
-def _social_response(prompt: str) -> tuple[str, float]:
+def _plan_social(prompt: str) -> ResponseStructure:
     lower = prompt.strip().lower()
-    for cues, shape, conf in _SOCIAL_SHAPES:
+    for cues, shape, act, conf in _SOCIAL_SHAPES:
         if any(c in lower for c in cues):
-            text, _ = _render_shape(shape, {}, fallback="Hello.")
-            return text, conf
-    text, _ = _render_shape("social_fallback", {}, fallback="Hello.")
-    return text, 0.7
+            return single_leaf(
+                act, template_shape=shape, confidence=conf, intent="social",
+            )
+    return single_leaf(
+        ActType.GREET,
+        template_shape="social_fallback",
+        confidence=0.7,
+        intent="social",
+    )
 
 
 # --- Top-level respond() -----------------------------------------------
@@ -658,6 +713,7 @@ def respond(
 
     # Track question_type for both the answer call and the TurnRecord.
     qtype = ""
+    structure: ResponseStructure | None = None
 
     # Elaboration short-circuit: 'tell me more', 'continue', 'and?' —
     # the rule-based intent classifier sees these as instruction or
@@ -667,30 +723,41 @@ def respond(
     elaboration = _is_elaboration(prompt)
     if elaboration and state.active_topic_node_ids:
         topic_id = state.active_topic_node_ids[0]
-        text, conf = _elaborate_topic(backbone, topic_id, state.emitted_facts)
+        structure = _plan_elaborate(backbone, topic_id, state.emitted_facts)
         # Use the topic itself as the anchor so downstream code (e.g.
         # the Compute Module conditioning) sees a meaningful subject.
         anchor_id = topic_id
-    # Step 3 + 4: content selection + surface realization based on intent.
+    # Step 3 + 4: content selection + structure planning by intent.
     elif result.intent == "question_answering":
         # Yes/no questions are a distinct class — try them first.
-        # When a polar pattern matches, return its verdict directly;
-        # the answer is a sentence with binary semantics ('Yes, …'/'No, …')
-        # that the NN can later be trained to mirror.
         yn = answer_yesno(backbone, prompt) if is_yesno_question(prompt) else None
         if yn is not None:
-            text, conf = yn.text, yn.confidence
             qtype = "yesno"
+            # YesNoAnswer.text is already the rendered string. Wrap
+            # it as a single-leaf VERIFY structure with a literal-only
+            # leaf so the realize() step is a no-op pass-through.
+            structure = single_leaf(
+                ActType.VERIFY,
+                template_id="",            # no template
+                fillers={},
+                confidence=yn.confidence,
+                intent="question_answering",
+            )
+            # Stash the prerendered text on the leaf via a literal
+            # filler against an inline template-less leaf. We honor it
+            # by short-circuiting realize() below when text is preset.
+            structure.root.leaf.fillers["__yn_text"] = FillerValue(
+                yn.text, source="literal", confidence=yn.confidence,
+            )
         elif anchor_id is None:
-            text, conf = _render_shape(
-                "fallback_no_anchor", {},
-                fallback="I don't know what you're asking about.",
-            )[0], 0.2
+            structure = single_leaf(
+                ActType.DEFER,
+                template_shape="fallback_no_anchor",
+                confidence=0.2,
+                intent="question_answering",
+            )
         else:
             qtype = _classify_question_type(prompt)
-            # Find the surface the user typed for the chosen anchor,
-            # so the answer reads with their word ('house') rather than
-            # the node's primary lemma ('home').
             user_surface = next(
                 (
                     t.surface for i, t in enumerate(result.tokens)
@@ -698,32 +765,45 @@ def respond(
                 ),
                 None,
             )
-            text, conf = _answer_question(
+            structure = _plan_question(
                 backbone, anchor_id,
                 question_type=qtype, user_surface=user_surface,
             )
     elif result.intent == "instruction":
-        text, conf = _instruction_acknowledgment(backbone, anchor_id)
+        structure = _plan_instruction_ack(backbone, anchor_id)
     elif result.intent == "social":
-        text, conf = _social_response(prompt)
+        structure = _plan_social(prompt)
     elif result.intent == "inform":
-        # Try to lift the declarative into a structured Belief that
-        # we keep on the discourse state. The acknowledgement template
-        # echoes the (subject, relation, target) when extraction worked
-        # so the user knows we registered the fact.
         belief = extract_belief(
             backbone, prompt, turn_index=state.turn_count + 1,
         )
         if belief is not None:
             state.session_beliefs.append(belief)
-            text, conf = _inform_acknowledgment_with_belief(belief)
+            structure = _plan_belief_ack(belief)
         else:
-            text, conf = _inform_acknowledgment(backbone, anchor_id)
+            structure = _plan_inform_ack(backbone, anchor_id)
     else:
-        text, conf = _render_shape(
-            "fallback_rephrase", {},
-            fallback="Could you rephrase that?",
-        )[0], 0.3
+        structure = single_leaf(
+            ActType.REPHRASE_REQUEST,
+            template_shape="fallback_rephrase",
+            confidence=0.3,
+        )
+
+    # Realize the structure to surface text. yesno results carry their
+    # prerendered text on a __yn_text filler; honor that as a special
+    # case until B3 lifts yesno into the planner directly.
+    assert structure is not None
+    if (
+        structure.root.is_leaf
+        and structure.root.leaf is not None
+        and "__yn_text" in structure.root.leaf.fillers
+    ):
+        yn_filler = structure.root.leaf.fillers["__yn_text"]
+        text = yn_filler.value if isinstance(yn_filler, FillerValue) else ""
+        conf = structure.confidence
+    else:
+        realized = realize(structure, _store())
+        text, conf = realized.text, structure.confidence
 
     # Pronoun-resolved anchors are inherently more uncertain than direct
     # lemma lookups — the resolution is a heuristic. Discount confidence
