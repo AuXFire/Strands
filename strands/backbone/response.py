@@ -33,6 +33,59 @@ from strands.backbone.compute_module import (
 )
 from strands.backbone.speech_act import classify_speech_act
 from strands.backbone.yesno import answer_yesno, is_yesno_question
+from strands.realization import (
+    FillerValue,
+    TemplateStore,
+    build_default_store,
+    render,
+)
+
+
+# Module-level template store, lazy-initialized on first use so the
+# realization layer can be inspected/swapped per test.
+_TEMPLATE_STORE: TemplateStore | None = None
+
+
+def _store() -> TemplateStore:
+    global _TEMPLATE_STORE
+    if _TEMPLATE_STORE is None:
+        _TEMPLATE_STORE = build_default_store()
+    return _TEMPLATE_STORE
+
+
+def set_template_store(store: TemplateStore | None) -> None:
+    """Override the module-level template store (tests / swapping)."""
+    global _TEMPLATE_STORE
+    _TEMPLATE_STORE = store
+
+
+def _render_shape(
+    shape: str, fillers: dict, *, fallback: str = "",
+    confidence: float = 0.7,
+) -> tuple[str, float]:
+    """Look up the best template for ``shape`` and render it. When no
+    template matches, return ``fallback`` (caller's last-resort string)
+    or an empty string."""
+    template = _store().best(shape=shape)
+    if template is None:
+        return fallback, confidence
+    rendered = render(template, fillers)
+    return rendered.finalize(), rendered.confidence
+
+
+def _render_relation(
+    rel: Rel, fillers: dict, *, shape: str = "",
+    fallback: str = "", confidence: float = 0.85,
+) -> tuple[str, float]:
+    """Look up the best template for the (shape, relation) pair and
+    render it. Falls back to a relation-only lookup if no shape match."""
+    template = (
+        _store().best(shape=shape) if shape else None
+    ) or _store().best(relation_type=int(rel))
+    if template is None:
+        return fallback, confidence
+    rendered = render(template, fillers)
+    return rendered.finalize(), rendered.confidence
 from strands.backbone.inference import InferenceResult, infer
 from strands.backbone.loader import Backbone
 from strands.backbone.schema import Rel
@@ -108,31 +161,31 @@ def _classify_question_type(prompt: str) -> str:
     return "definition"
 
 
-# Question-type → (relation, sentence template).
+# Question-type → (relation, response_shape).
+# The response_shape selects the template; the relation drives the
+# backbone walk. Templates live in strands/realization/seeds.py.
 _QUESTION_TYPE_RELATIONS: dict[str, tuple[Rel, str]] = {
-    "location":    (Rel.AT_LOCATION,  "{subject} can be found at {target}"),
-    "composition": (Rel.MADE_OF,      "{subject} is made of {target}"),
-    "purpose":     (Rel.USED_FOR,     "{subject} is used for {target}"),
-    "ability":     (Rel.CAPABLE_OF,   "{subject} is capable of {target}"),
-    "cause":       (Rel.CAUSED_BY,    "{subject} is caused by {target}"),
-    "effect":      (Rel.CAUSES,       "{subject} causes {target}"),
+    "location":    (Rel.AT_LOCATION,  "answer_location"),
+    "composition": (Rel.MADE_OF,      "answer_composition"),
+    "purpose":     (Rel.USED_FOR,     "answer_purpose"),
+    "ability":     (Rel.CAPABLE_OF,   "answer_ability"),
+    "cause":       (Rel.CAUSED_BY,    "answer_cause"),
+    "effect":      (Rel.CAUSES,       "answer_effect"),
 }
 
 
-# Relation walk for topic elaboration, in priority order. Each entry is
-# (relation, sentence template) where {subject} and {target} are filled
-# with backbone lemmas. Templates are kept simple — surface smoothing
-# (capitalize, period) happens at the call site.
-_ELABORATION_RELATIONS: tuple[tuple[Rel, str], ...] = (
-    (Rel.HYPERNYM,     "{subject} is a kind of {target}"),
-    (Rel.HAS_PROPERTY, "{subject} is {target}"),
-    (Rel.MERONYM,      "{subject} has {target} as a part"),
-    (Rel.AT_LOCATION,  "{subject} can be found at {target}"),
-    (Rel.USED_FOR,     "{subject} is used for {target}"),
-    (Rel.CAPABLE_OF,   "{subject} is capable of {target}"),
-    (Rel.MADE_OF,      "{subject} is made of {target}"),
-    (Rel.HYPONYM,      "examples of {subject} include {target}"),
-    (Rel.HOLONYM,      "{subject} is part of {target}"),
+# Relation walk priority order for topic elaboration. Each relation
+# resolves to a template via TemplateStore.by_relation(rel).
+_ELABORATION_RELATIONS: tuple[Rel, ...] = (
+    Rel.HYPERNYM,
+    Rel.HAS_PROPERTY,
+    Rel.MERONYM,
+    Rel.AT_LOCATION,
+    Rel.USED_FOR,
+    Rel.CAPABLE_OF,
+    Rel.MADE_OF,
+    Rel.HYPONYM,
+    Rel.HOLONYM,
 )
 
 
@@ -300,14 +353,16 @@ def _article(word: str) -> str:
 
 
 def _answer_by_relation(
-    backbone: Backbone, anchor_id: int, rel: Rel, template: str,
+    backbone: Backbone, anchor_id: int, rel: Rel,
     *, top_k: int = 2, subject_override: str | None = None,
+    shape: str = "",
 ) -> tuple[str, float] | None:
-    """Walk a specific relation from the anchor and return up to
-    ``top_k`` highest-weight targets joined into a single sentence,
-    or ``None`` if no edges exist. ``subject_override`` lets the caller
-    keep the user's surface word ('house') rather than the matched
-    node's primary lemma ('home')."""
+    """Walk a specific relation from the anchor and render up to
+    ``top_k`` highest-weight targets via the realization layer.
+    Returns None if no edges exist or no template matches.
+    ``subject_override`` keeps the user's surface word; ``shape``
+    selects a specific response template (e.g. 'answer_location').
+    """
     edges = backbone.edges_with_relation(anchor_id, rel)
     if edges.size == 0:
         return None
@@ -326,12 +381,17 @@ def _answer_by_relation(
             break
     if not targets:
         return None
-    if len(targets) == 1:
-        joined = targets[0]
-    else:
-        joined = " and ".join(targets)
-    sentence = template.format(subject=subject, target=joined)
-    return sentence[0].upper() + sentence[1:] + ".", 0.85
+    template = (
+        _store().best(shape=shape) if shape else None
+    ) or _store().best(relation_type=int(rel))
+    if template is None:
+        return None
+    fillers = {
+        "subject": FillerValue(subject),  # template auto-caps via SlotSpec
+        "target": targets,                # LEMMA_LIST handles the join
+    }
+    rendered = render(template, fillers)
+    return rendered.finalize(), 0.85
 
 
 def _sibling_sense_with_relation(
@@ -380,11 +440,11 @@ def _answer_question(
 
     # Typed questions try the specific relation first.
     if question_type != "definition":
-        rel_template = _QUESTION_TYPE_RELATIONS.get(question_type)
-        if rel_template is not None:
-            rel, template = rel_template
+        rel_shape = _QUESTION_TYPE_RELATIONS.get(question_type)
+        if rel_shape is not None:
+            rel, shape = rel_shape
             answer = _answer_by_relation(
-                backbone, anchor_id, rel, template,
+                backbone, anchor_id, rel, shape=shape,
                 subject_override=subject,
             )
             if answer is not None:
@@ -395,7 +455,7 @@ def _answer_question(
             sibling = _sibling_sense_with_relation(backbone, anchor_id, rel)
             if sibling is not None:
                 answer = _answer_by_relation(
-                    backbone, sibling, rel, template,
+                    backbone, sibling, rel, shape=shape,
                     subject_override=subject,
                 )
                 if answer is not None:
@@ -405,8 +465,6 @@ def _answer_question(
     # Definition path (and fallback for typed questions): use gloss.
     gloss = backbone.gloss_for(anchor_id)
     if gloss:
-        first = gloss[0].lower() + gloss[1:] if len(gloss) > 1 else gloss
-        text = f"{subject.capitalize()} is {first}."
         # Glosses under ~40 chars are often terse — fold in the hypernym
         # so the answer still reads as substantive.
         if len(gloss) < 40:
@@ -414,23 +472,44 @@ def _answer_question(
             if hyp:
                 target_lemma = _best_lemma(backbone, hyp[0])
                 if target_lemma and target_lemma != subject:
-                    article = _article(target_lemma)
-                    text = (
-                        f"{subject.capitalize()} is {first}, "
-                        f"{article} kind of {target_lemma}."
+                    text, _ = _render_shape(
+                        "definition_with_hypernym",
+                        {
+                            "subject": FillerValue(subject),
+                            "gloss": FillerValue(gloss),
+                            "hypernym": FillerValue(target_lemma),
+                        },
                     )
+                    return text, 0.9
+        text, _ = _render_shape(
+            "definition",
+            {
+                "subject": FillerValue(subject),
+                "gloss": FillerValue(gloss),
+            },
+        )
         return text, 0.9
 
     hyp = _hypernym_target(backbone, anchor_id)
     if hyp:
         target_id, weight = hyp
         target_lemma = _best_lemma(backbone, target_id) or "something"
-        article = _article(target_lemma)
         confidence = min(0.85, weight / 0xFFFF + 0.4)
-        return f"{subject.capitalize()} is {article} {target_lemma}.", confidence
+        text, _ = _render_shape(
+            "definition_fallback",
+            {
+                "subject": FillerValue(subject),
+                "hypernym": FillerValue(target_lemma),
+            },
+        )
+        return text, confidence
 
     # Nothing useful — punt to Compute Module.
-    return f"I don't have enough information about {subject}.", 0.2
+    text, _ = _render_shape(
+        "definition_unknown",
+        {"subject": FillerValue(subject)},
+    )
+    return text, 0.2
 
 
 def _elaborate_topic(
@@ -442,9 +521,15 @@ def _elaborate_topic(
     the chosen fact in ``emitted`` so later elaboration calls produce
     novel content."""
     subject = _best_lemma(backbone, anchor_id) or "it"
-    for rel, template in _ELABORATION_RELATIONS:
+    for rel in _ELABORATION_RELATIONS:
         edges = backbone.edges_with_relation(anchor_id, rel)
         if edges.size == 0:
+            continue
+        template = (
+            _store().best(shape="elaborate", relation_type=int(rel))
+            or _store().best(relation_type=int(rel))
+        )
+        if template is None:
             continue
         order = np.argsort(-edges["weight"].astype(np.int64))
         for idx in order:
@@ -456,19 +541,31 @@ def _elaborate_topic(
             if not target_lemma or target_lemma == subject:
                 continue
             emitted.add(key)
-            sentence = template.format(subject=subject, target=target_lemma)
-            return sentence[0].upper() + sentence[1:] + ".", 0.8
+            rendered = render(template, {
+                "subject": FillerValue(subject),
+                "target": FillerValue(target_lemma),
+            })
+            return rendered.finalize(), 0.8
     # Exhausted — nothing new to say.
-    return f"That's all I have about {subject}.", 0.4
+    text, _ = _render_shape(
+        "elaborate_exhausted",
+        {"subject": FillerValue(subject)},
+    )
+    return text, 0.4
 
 
 def _inform_acknowledgment(
     backbone: Backbone, anchor_id: int | None,
 ) -> tuple[str, float]:
     if anchor_id is None:
-        return "Got it.", 0.6
+        return _render_shape("inform_bare", {}, fallback="Got it.")[0], 0.6
     subject = _best_lemma(backbone, anchor_id) or "that"
-    return f"Got it — noted about {subject}.", 0.7
+    text, _ = _render_shape(
+        "inform_generic_ack",
+        {"subject": FillerValue(subject)},
+        fallback=f"Got it — noted about {subject}.",
+    )
+    return text, 0.7
 
 
 def _inform_acknowledgment_with_belief(
@@ -479,29 +576,45 @@ def _inform_acknowledgment_with_belief(
     avoids subject-verb agreement bugs ('cats is cute') and confirms
     the exact wording we registered. Higher confidence than the generic
     'Got it' since we actually structured the fact."""
-    return f"Got it — noted that {belief.raw_prompt.rstrip('.!?')}.", 0.85
+    raw = belief.raw_prompt.rstrip(".!?")
+    text, _ = _render_shape(
+        "inform_belief_ack",
+        {"raw": FillerValue(raw, source="literal")},
+        fallback=f"Got it — noted that {raw}.",
+    )
+    return text, 0.85
 
 
 def _instruction_acknowledgment(
     backbone: Backbone, anchor_id: int | None,
 ) -> tuple[str, float]:
     if anchor_id is None:
-        return "OK.", 0.5
+        return _render_shape("instruct_bare", {}, fallback="OK.")[0], 0.5
     subject = _best_lemma(backbone, anchor_id) or "the request"
-    return f"OK — I'll work on {subject}.", 0.6
+    text, _ = _render_shape(
+        "instruct_with_subject",
+        {"subject": FillerValue(subject)},
+        fallback=f"OK — I'll work on {subject}.",
+    )
+    return text, 0.6
+
+
+_SOCIAL_SHAPES: tuple[tuple[tuple[str, ...], str, float], ...] = (
+    (("hi", "hello", "hey"), "social_greeting", 0.95),
+    (("thank",), "social_thanks", 0.95),
+    (("sorry",), "social_apology", 0.9),
+    (("bye",), "social_farewell", 0.95),
+)
 
 
 def _social_response(prompt: str) -> tuple[str, float]:
     lower = prompt.strip().lower()
-    if any(g in lower for g in ("hi", "hello", "hey")):
-        return "Hello.", 0.95
-    if "thank" in lower:
-        return "You're welcome.", 0.95
-    if "sorry" in lower:
-        return "No worries.", 0.9
-    if "bye" in lower:
-        return "Goodbye.", 0.95
-    return "Hello.", 0.7
+    for cues, shape, conf in _SOCIAL_SHAPES:
+        if any(c in lower for c in cues):
+            text, _ = _render_shape(shape, {}, fallback="Hello.")
+            return text, conf
+    text, _ = _render_shape("social_fallback", {}, fallback="Hello.")
+    return text, 0.7
 
 
 # --- Top-level respond() -----------------------------------------------
@@ -569,7 +682,10 @@ def respond(
             text, conf = yn.text, yn.confidence
             qtype = "yesno"
         elif anchor_id is None:
-            text, conf = "I don't know what you're asking about.", 0.2
+            text, conf = _render_shape(
+                "fallback_no_anchor", {},
+                fallback="I don't know what you're asking about.",
+            )[0], 0.2
         else:
             qtype = _classify_question_type(prompt)
             # Find the surface the user typed for the chosen anchor,
@@ -604,7 +720,10 @@ def respond(
         else:
             text, conf = _inform_acknowledgment(backbone, anchor_id)
     else:
-        text, conf = "Could you rephrase that?", 0.3
+        text, conf = _render_shape(
+            "fallback_rephrase", {},
+            fallback="Could you rephrase that?",
+        )[0], 0.3
 
     # Pronoun-resolved anchors are inherently more uncertain than direct
     # lemma lookups — the resolution is a heuristic. Discount confidence

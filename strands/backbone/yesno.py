@@ -223,18 +223,40 @@ def _all_target_senses(
     return nids
 
 
+_YES_SHAPE_BY_REL: dict[Rel, str] = {
+    Rel.CAPABLE_OF:   "yesno_yes_capable",
+    Rel.HAS_PROPERTY: "yesno_yes_property",
+    Rel.HAS_A:        "yesno_yes_has",
+}
+_POSITIVE_PHRASE_BY_REL: dict[Rel, str] = {
+    Rel.CAPABLE_OF:   "{s} can {t}",
+    Rel.HAS_PROPERTY: "{s} is {t}",
+    Rel.HAS_A:        "{s} has {t}",
+}
+
+
+def _render(shape: str, fillers: dict, *, fallback: str) -> str:
+    from strands.realization import build_default_store, render
+    # Local import to avoid a cycle at module load.
+    global _STORE
+    if "_STORE" not in globals() or _STORE is None:
+        _STORE = build_default_store()
+    template = _STORE.best(shape=shape)
+    if template is None:
+        return fallback
+    return render(template, fillers).finalize()
+
+
+_STORE = None
+
+
 def answer_yesno(
     backbone: Backbone, prompt: str,
 ) -> YesNoAnswer | None:
     """Match the prompt against yes/no patterns and produce a verdict
-    backed by backbone evidence.
-
-    Cross-sense: every sense of the subject lemma is tested. A YES from
-    any sense beats a NO — yes/no questions are more about "does the
-    backbone know this fact?" than about which sense is intended. NO
-    is only returned when the hypernym-closure check rules it out
-    against every plausible sense (entity/event types preferred).
-    """
+    backed by backbone evidence. All surface text is rendered via the
+    realization layer's template store (B1)."""
+    from strands.realization import FillerValue
     s = prompt.strip().lower()
     for pattern, rel, kind in _YN_PATTERNS:
         m = pattern.match(s)
@@ -244,44 +266,43 @@ def answer_yesno(
         target = m.group(2).strip()
         if not subject or not target:
             continue
-        # Resolve subject and target to ALL their senses; cross-sense
-        # checks are the norm for yes/no questions.
         subject_senses = _all_subject_senses(backbone, subject)
         target_senses = _all_target_senses(backbone, target)
         if not subject_senses or not target_senses:
             missing = subject if not subject_senses else target
+            text = _render(
+                "definition_unknown",
+                {"subject": FillerValue(missing)},
+                fallback=f"I don't have enough information about {missing}.",
+            )
             return YesNoAnswer(
-                verdict="unsure",
-                text=f"I don't have enough information about {missing}.",
-                confidence=0.3,
-                subject_surface=subject,
-                target_surface=target,
+                verdict="unsure", text=text, confidence=0.3,
+                subject_surface=subject, target_surface=target,
                 relation=rel,
             )
-        # The hypernym path uses a single target id (closure walk);
-        # pick the highest-edge-count target sense.
         target_id = max(
             target_senses,
             key=lambda nid: int(backbone.nodes[nid]["relationship_count"]),
         )
 
         if kind == "hypernym":
-            # YES if any sense places target in its hypernym closure.
             for sid in subject_senses:
                 yes, _ = _is_in_hypernym_closure(backbone, sid, target_id)
                 if yes:
-                    return YesNoAnswer(
-                        verdict="yes",
-                        text=f"Yes, {_article(subject)} {subject} is "
-                             f"{_article(target)} {target}.",
-                        confidence=0.92,
-                        subject_surface=subject,
-                        target_surface=target,
-                        relation=rel,
-                        evidence_node_id=target_id,
+                    text = _render(
+                        "yesno_yes_hypernym",
+                        {
+                            "subject": FillerValue(subject),
+                            "target": FillerValue(target),
+                        },
+                        fallback=f"Yes, {_article(subject)} {subject} is "
+                                 f"{_article(target)} {target}.",
                     )
-            # No sense had it. Pick the most informative (entity-typed,
-            # max edges) sense for the negative justification.
+                    return YesNoAnswer(
+                        verdict="yes", text=text, confidence=0.92,
+                        subject_surface=subject, target_surface=target,
+                        relation=rel, evidence_node_id=target_id,
+                    )
             best_sid = max(
                 subject_senses,
                 key=lambda nid: (
@@ -293,70 +314,81 @@ def answer_yesno(
             if chain:
                 actual = _best_lemma(backbone, chain[0])
                 if actual and actual != target:
-                    return YesNoAnswer(
-                        verdict="no",
-                        text=(
+                    text = _render(
+                        "yesno_no_with_actual",
+                        {
+                            "subject": FillerValue(subject),
+                            "target": FillerValue(target),
+                            "actual": FillerValue(actual),
+                        },
+                        fallback=(
                             f"No, {_article(subject)} {subject} is not "
                             f"{_article(target)} {target}; "
                             f"{_article(subject)} {subject} is "
                             f"{_article(actual)} {actual}."
                         ),
-                        confidence=0.88,
-                        subject_surface=subject,
-                        target_surface=target,
-                        relation=rel,
-                        evidence_node_id=chain[0],
                     )
+                    return YesNoAnswer(
+                        verdict="no", text=text, confidence=0.88,
+                        subject_surface=subject, target_surface=target,
+                        relation=rel, evidence_node_id=chain[0],
+                    )
+            text = _render(
+                "yesno_no_plain",
+                {
+                    "subject": FillerValue(subject),
+                    "target": FillerValue(target),
+                },
+                fallback=f"No, {_article(subject)} {subject} is not "
+                         f"{_article(target)} {target}.",
+            )
             return YesNoAnswer(
-                verdict="no",
-                text=f"No, {_article(subject)} {subject} is not "
-                     f"{_article(target)} {target}.",
-                confidence=0.8,
-                subject_surface=subject,
-                target_surface=target,
+                verdict="no", text=text, confidence=0.8,
+                subject_surface=subject, target_surface=target,
                 relation=rel,
             )
 
-        # capable / property / has — search every sense of the subject
-        # for a direct edge into ANY sense of the target.
+        # capable / property / has paths.
         yes_sid: int | None = None
         for sid in subject_senses:
             if _has_relation_target(backbone, sid, rel, target_senses):
                 yes_sid = sid
                 break
         if yes_sid is not None:
-            verb = {
-                Rel.CAPABLE_OF:   f"{_article(subject)} {subject} can {target}",
-                Rel.HAS_PROPERTY: f"{_article(subject)} {subject} is {target}",
-                Rel.HAS_A:        f"{_article(subject)} {subject} has {target}",
-            }.get(rel, f"{_article(subject)} {subject} is {target}")
+            shape = _YES_SHAPE_BY_REL.get(rel, "yesno_yes_property")
+            text = _render(
+                shape,
+                {
+                    "subject": FillerValue(subject),
+                    "target": FillerValue(target),
+                },
+                fallback=f"Yes, {_article(subject)} {subject} is {target}.",
+            )
             return YesNoAnswer(
-                verdict="yes",
-                text=f"Yes, {verb}.",
-                confidence=0.85,
-                subject_surface=subject,
-                target_surface=target,
-                relation=rel,
-                evidence_node_id=target_id,
+                verdict="yes", text=text, confidence=0.85,
+                subject_surface=subject, target_surface=target,
+                relation=rel, evidence_node_id=target_id,
             )
 
-        # No edge found in any sense — absence of evidence isn't
-        # evidence of absence, so we report 'unsure' rather than 'no'.
-        # Phrasing avoids double-negatives.
-        positive_phrase = {
-            Rel.CAPABLE_OF:   f"{subject} can {target}",
-            Rel.HAS_PROPERTY: f"{subject} is {target}",
-            Rel.HAS_A:        f"{subject} has {target}",
-        }.get(rel, f"{subject} is {target}")
-        return YesNoAnswer(
-            verdict="unsure",
-            text=(
-                f"I don't have direct evidence either way about whether "
+        # Unsure path: render the positive phrase via a tiny inline
+        # template, then plug it into the yesno_unsure shape's literal
+        # slot. Avoids double-negation.
+        positive_phrase = _POSITIVE_PHRASE_BY_REL.get(
+            rel, "{s} is {t}",
+        ).format(s=subject, t=target)
+        text = _render(
+            "yesno_unsure",
+            {"positive_phrase": FillerValue(
+                positive_phrase, source="literal",
+            )},
+            fallback=(
+                "I don't have direct evidence either way about whether "
                 f"{positive_phrase}."
             ),
-            confidence=0.4,
-            subject_surface=subject,
-            target_surface=target,
+        )
+        return YesNoAnswer(
+            verdict="unsure", text=text, confidence=0.4,
+            subject_surface=subject, target_surface=target,
             relation=rel,
         )
     return None

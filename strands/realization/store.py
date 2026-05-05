@@ -73,9 +73,18 @@ class TemplateStore:
         self, *, shape: str = "", relation_type: int = 0,
         register: Register | None = None,
     ) -> Template | None:
-        """Highest-weight template matching the criteria, or None."""
+        """Highest-weight template matching the criteria, or None.
+
+        When BOTH ``shape`` and ``relation_type`` are supplied, the
+        result must match both — useful for shape-bucketed relation
+        templates like ('elaborate', HYPERNYM) vs ('elaborate', MERONYM).
+        When only one is supplied, that index is used.
+        """
         pool: list[Template] = []
-        if shape:
+        if shape and relation_type:
+            shape_pool = self.by_shape(shape, register=register)
+            pool = [t for t in shape_pool if t.relation_type == relation_type]
+        elif shape:
             pool = self.by_shape(shape, register=register)
         elif relation_type:
             pool = self.by_relation(relation_type, register=register)
